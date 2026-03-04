@@ -1,0 +1,15 @@
+[workspace]
+members = [
+    "crates/huzc",
+    "crates/huzi-ast",
+    "crates/huzi-lexer",
+    "crates/huzi-parser",
+    "crates/huzi-codegen",
+    "crates/huzi-error",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Huzi Team"]
+license = "MIT"
