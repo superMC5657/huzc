@@ -452,6 +452,25 @@ impl<'ctx> CodeGen<'ctx> {
         let left = self.compile_expr(&expr.left)?;
         let right = self.compile_expr(&expr.right)?;
 
+        // Handle type coercion for mixed int/float operations
+        let (left, right) = if left.is_float_value() && right.is_int_value() {
+            // Convert int to float
+            let int_val = right.into_int_value();
+            let float_val = self.builder
+                .build_signed_int_to_float(int_val, self.context.f64_type(), "to_f64")
+                .unwrap();
+            (left, float_val.into())
+        } else if left.is_int_value() && right.is_float_value() {
+            // Convert int to float
+            let int_val = left.into_int_value();
+            let float_val = self.builder
+                .build_signed_int_to_float(int_val, self.context.f64_type(), "to_f64")
+                .unwrap();
+            (float_val.into(), right)
+        } else {
+            (left, right)
+        };
+
         let value = match expr.operator {
             BinOp::Add => {
                 if left.is_int_value() {

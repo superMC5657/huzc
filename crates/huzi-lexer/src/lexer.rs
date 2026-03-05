@@ -128,6 +128,24 @@ impl Lexer {
                     self.advance();
                     self.column += 1;
                 }
+                // Support both // and # comments
+                '/' => {
+                    // Check for // comment
+                    if self.pos + 1 < self.source.len() && self.source[self.pos + 1] == '/' {
+                        // Skip until end of line
+                        while !self.is_at_end() && self.peek() != '\n' {
+                            self.advance();
+                        }
+                    } else {
+                        break;
+                    }
+                }
+                '#' => {
+                    // Skip until end of line
+                    while !self.is_at_end() && self.peek() != '\n' {
+                        self.advance();
+                    }
+                }
                 _ => break,
             }
         }
