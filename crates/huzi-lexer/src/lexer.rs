@@ -128,6 +128,11 @@ impl Lexer {
                     self.advance();
                     self.column += 1;
                 }
+                '\n' => {
+                    self.advance();
+                    self.line += 1;
+                    self.column = 1;
+                }
                 // Support both // and # comments
                 '/' => {
                     // Check for // comment
@@ -135,6 +140,12 @@ impl Lexer {
                         // Skip until end of line
                         while !self.is_at_end() && self.peek() != '\n' {
                             self.advance();
+                        }
+                        // Skip the newline too
+                        if !self.is_at_end() && self.peek() == '\n' {
+                            self.advance();
+                            self.line += 1;
+                            self.column = 1;
                         }
                     } else {
                         break;
@@ -144,6 +155,12 @@ impl Lexer {
                     // Skip until end of line
                     while !self.is_at_end() && self.peek() != '\n' {
                         self.advance();
+                    }
+                    // Skip the newline too
+                    if !self.is_at_end() && self.peek() == '\n' {
+                        self.advance();
+                        self.line += 1;
+                        self.column = 1;
                     }
                 }
                 _ => break,

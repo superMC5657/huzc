@@ -106,12 +106,22 @@ impl<'ctx> CodeGen<'ctx> {
         let getchar_fn = self.context.i32_type().fn_type(&[], false);
         self.module.add_function("getchar", getchar_fn, None);
 
-        // malloc for string allocation
-        let malloc_fn = self.context.i32_type().fn_type(
+        // malloc for string allocation (returns i8*)
+        let malloc_fn = self.context.ptr_type(inkwell::AddressSpace::default()).fn_type(
             &[self.context.i32_type().into()],
             false,
         );
         self.module.add_function("malloc", malloc_fn, None);
+
+        // sprintf for to_string
+        let sprintf_fn = self.context.i32_type().fn_type(
+            &[
+                self.context.ptr_type(AddressSpace::default()).into(),
+                self.context.ptr_type(AddressSpace::default()).into(),
+            ],
+            true,
+        );
+        self.module.add_function("sprintf", sprintf_fn, None);
 
         // Math functions (link to libm)
         let sqrt_fn = self.context.f64_type().fn_type(&[self.context.f64_type().into()], false);

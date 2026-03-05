@@ -74,7 +74,9 @@ fn run_command(cmd: &str, args: &[&str]) -> Result<(), String> {
         .map_err(|e| format!("Failed to run {}: {}", cmd, e))?;
 
     if !output.status.success() {
-        return Err(format!("{} error:\n{}", cmd, String::from_utf8_lossy(&output.stderr)));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        return Err(format!("{} error:\nstdout: {}\nstderr: {}", cmd, stdout, stderr));
     }
     Ok(())
 }
@@ -147,22 +149,24 @@ fn main() {
 
     // Link to executable
     println!("  Linking to executable...");
-    
+
     // Try lld-link first (Windows)
     let lld_args = [
         format!("/OUT:{}", exe_path.to_str().unwrap()),
         "/ENTRY:main".to_string(),
         "/LIBPATH:C:\\Program Files (x86)\\Windows Kits\\10\\lib\\10.0.26100.0\\ucrt\\x64".to_string(),
+        "/LIBPATH:C:\\Program Files (x86)\\Windows Kits\\10\\lib\\10.0.26100.0\\um\\x64".to_string(),
         "/DEFAULTLIB:ucrt.lib".to_string(),
         "/DEFAULTLIB:msvcrt.lib".to_string(),
+        "/DEFAULTLIB:legacy_stdio_definitions.lib".to_string(),
         obj_path.to_str().unwrap().to_string(),
     ];
     let lld_args_ref: Vec<&str> = lld_args.iter().map(|s| s.as_str()).collect();
-    
-    let use_clang = run_command("lld-link", &lld_args_ref).is_err();
-    
+
+    let lld_success = run_command("lld-link", &lld_args_ref).is_ok();
+
     // Fall back to clang
-    if use_clang {
+    if !lld_success {
         println!("  Trying clang...");
         let clang_target = if cfg!(target_os = "windows") {
             "x86_64-pc-windows-msvc"
@@ -171,12 +175,25 @@ fn main() {
         } else {
             "x86_64-unknown-linux-gnu"
         };
+
+        // Add libraries for C standard functions (printf, malloc, sprintf, etc.)
+        let mut clang_args = vec![
+            "-o".to_string(), exe_path.to_str().unwrap().to_string(),
+            "-target".to_string(), clang_target.to_string(),
+        ];
         
-        run_command("clang", &[
-            "-o", exe_path.to_str().unwrap(),
-            "-target", clang_target,
-            obj_path.to_str().unwrap(),
-        ]).unwrap_or_else(|e| {
+        if cfg!(target_os = "windows") {
+            clang_args.extend(vec![
+                obj_path.to_str().unwrap().to_string(),
+                "-lucrt".to_string(),
+                "-llegacy_stdio_definitions".to_string(),
+            ]);
+        } else {
+            clang_args.insert(2, obj_path.to_str().unwrap().to_string());
+        }
+        
+        let clang_args_ref: Vec<&str> = clang_args.iter().map(|s| s.as_str()).collect();
+        run_command("clang", &clang_args_ref).unwrap_or_else(|e| {
             eprintln!("{}", e);
             std::process::exit(1);
         });
