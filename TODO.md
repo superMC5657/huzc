@@ -100,6 +100,7 @@ huzc/
 - [ ] 内联简单函数
 - [ ] 常量折叠
 - [ ] 公共子表达式消除
+- [x] 简化 main.rs 代码逻辑 (移除 emit-llvm/only-compile)
 
 #### 11. LLVM 优化
 - [ ] 启用 LLVM 优化 passes

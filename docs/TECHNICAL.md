@@ -48,6 +48,17 @@ huzc/
 [5/5] Generating... - 链接生成可执行文件
 ```
 
+### 2.4 命令行选项
+
+```bash
+huzc --input <source.hz> -o <output>
+```
+
+| 选项 | 说明 |
+|------|------|
+| `--input, -i` | 输入的 .hz 源文件 |
+| `--output, -o` | 输出文件基础名 (默认：a) |
+
 ## 3. 语言特性
 
 ### 3.1 基础类型
@@ -121,6 +132,7 @@ let n = read_int()
 - 编译流程协调
 - 文件系统操作
 - 链接器调用 (clang/lld-link)
+- 中间文件自动清理
 
 ### 4.2 huzi-ast
 - AST 节点定义
@@ -257,10 +269,6 @@ cargo run --release --bin huzc -- --input examples/array.hz -o out/array
 
 # 运行测试
 ./out/array.exe
-
-# 查看 LLVM IR
-cargo run --release --bin huzc -- --input examples/hello.hz --emit-llvm -o hello
-cat hello.ll
 ```
 
 ---

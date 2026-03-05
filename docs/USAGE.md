@@ -30,9 +30,6 @@ cargo run --release --bin huzc -- --input examples/hello.hz -o hello
 
 # 示例 - 编译到子目录
 cargo run --release --bin huzc -- --input examples/hello.hz -o out/hello
-
-# 示例 - 输出 LLVM IR
-cargo run --release --bin huzc -- --input examples/hello.hz --emit-llvm -o out/hello
 ```
 
 ### 3. 运行程序
@@ -51,15 +48,12 @@ cargo run --release --bin huzc -- --input examples/hello.hz --emit-llvm -o out/h
 |------|------|------|
 | `--input <file>` | 输入的 .hz 源文件 | `--input hello.hz` |
 | `-o <name>` | 输出文件基础名 (自动添加平台扩展名) | `-o hello` → `hello.exe` (Windows) |
-| `--emit-llvm` | 输出 LLVM IR (.ll 文件) | `--emit-llvm -o hello` |
-| `--only-compile` | 只编译到目标文件，不链接 | `--only-compile -o hello` |
 
 ### 输出文件说明
 
 - **Windows**: 输出 `hello.exe`，中间文件 `hello.ll`、`hello.obj`
 - **Linux/macOS**: 输出 `hello`，中间文件 `hello.ll`、`hello.o`
 - 中间文件在编译完成后自动清理
-- 使用 `--emit-llvm` 时保留 `.ll` 文件
 
 ## 语言语法
 
@@ -366,12 +360,8 @@ huzc/
 ### Q: 编译报错 "Verification failed"
 A: 这是 LLVM 验证警告，编译器会继续生成可执行文件。如果生成的程序无法运行，请检查代码逻辑。
 
-### Q: 如何调试生成的 LLVM IR
-A: 使用 `--emit-llvm` 参数生成 .ll 文件查看：
-```bash
-huzc --input hello.hz --emit-llvm -o hello
-cat hello.ll
-```
+### Q: 如何查看生成的 LLVM IR
+A: 中间文件 `.ll` 在编译完成后会自动清理。如需查看，可临时修改代码保留中间文件。
 
 ### Q: 支持递归函数吗
 A: 支持。详见示例 `fact.hz`。
