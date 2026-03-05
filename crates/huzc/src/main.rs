@@ -4,7 +4,7 @@ use huzi_lexer::Lexer;
 use huzi_parser::Parser as HuziParser;
 use inkwell::context::Context;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Parser, Debug)]
@@ -14,7 +14,7 @@ struct Args {
     #[arg(short, long)]
     input: String,
 
-    #[arg(short, long, default_value = "a.exe")]
+    #[arg(short, long, default_value = "a")]
     output: String,
 
     #[arg(long, default_value = "false")]
@@ -22,6 +22,24 @@ struct Args {
 
     #[arg(long, default_value = "false")]
     only_compile: bool,
+}
+
+fn get_platform_exe_ext() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "exe"
+    } else if cfg!(target_os = "macos") {
+        ""
+    } else {
+        ""
+    }
+}
+
+fn get_platform_obj_ext() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "obj"
+    } else {
+        "o"
+    }
 }
 
 fn main() {
@@ -72,19 +90,50 @@ fn main() {
         eprintln!("{}", codegen.print_llvm_ir());
     }
 
-    let input_path = Path::new(&args.input);
-    let stem = input_path.file_stem().unwrap().to_str().unwrap();
-    let temp_dir = std::env::temp_dir();
-    let ll_path = temp_dir.join(format!("{}.ll", stem));
-    let obj_path = temp_dir.join(format!("{}.obj", stem));
+    // Determine output paths
+    let output_path = PathBuf::from(&args.output);
+    let output_dir = output_path.parent().unwrap_or(Path::new(""));
+    
+    // Get the base name for intermediate files from output
+    let output_stem = output_path.file_stem().unwrap().to_str().unwrap();
+    
+    // Build output executable path with platform-specific extension
+    let exe_path = if args.output.ends_with(".exe") || args.output.ends_with(".o") || args.output.ends_with(".obj") {
+        PathBuf::from(&args.output)
+    } else {
+        let exe_ext = get_platform_exe_ext();
+        if exe_ext.is_empty() {
+            PathBuf::from(&args.output)
+        } else {
+            PathBuf::from(format!("{}.{}", args.output, exe_ext))
+        }
+    };
+    
+    // Intermediate files go to the same directory as output, with same base name
+    let ll_path = if output_dir.as_os_str().is_empty() {
+        PathBuf::from(format!("{}.ll", output_stem))
+    } else {
+        output_dir.join(format!("{}.ll", output_stem))
+    };
+    
+    let obj_path = if output_dir.as_os_str().is_empty() {
+        PathBuf::from(format!("{}.{}", output_stem, get_platform_obj_ext()))
+    } else {
+        output_dir.join(format!("{}.{}", output_stem, get_platform_obj_ext()))
+    };
 
     if args.emit_llvm {
         println!("[5/5] Writing LLVM IR...");
-        if let Err(e) = codegen.write_ir_to_file(&args.output) {
+        let llvm_output_path = if args.output.ends_with(".ll") {
+            PathBuf::from(&args.output)
+        } else {
+            PathBuf::from(format!("{}.ll", args.output))
+        };
+        if let Err(e) = codegen.write_ir_to_file(&llvm_output_path.to_str().unwrap()) {
             eprintln!("Error writing IR: {}", e);
             std::process::exit(1);
         }
-        println!("✓ LLVM IR written to {}", args.output);
+        println!("✓ LLVM IR written to {}", llvm_output_path.display());
         return;
     }
 
@@ -121,11 +170,11 @@ fn main() {
     }
 
     if args.only_compile {
-        if let Err(e) = fs::copy(&obj_path, &args.output) {
+        if let Err(e) = fs::copy(&obj_path, &exe_path) {
             eprintln!("Error copying object file: {}", e);
             std::process::exit(1);
         }
-        println!("✓ Object file written to {}", args.output);
+        println!("✓ Object file written to {}", exe_path.display());
 
         let _ = fs::remove_file(&ll_path);
         let _ = fs::remove_file(&obj_path);
@@ -137,7 +186,7 @@ fn main() {
     // Try lld-link first, then fall back to clang
     let lld_output = Command::new("lld-link")
         .args([
-            &format!("/OUT:{}", &args.output),
+            &format!("/OUT:{}", exe_path.to_str().unwrap()),
             "/ENTRY:main",
             "/LIBPATH:C:\\Program Files (x86)\\Windows Kits\\10\\lib\\10.0.26100.0\\ucrt\\x64",
             "/DEFAULTLIB:ucrt.lib",
@@ -157,7 +206,7 @@ fn main() {
         let clang_output = Command::new("clang")
             .args([
                 "-o",
-                &args.output,
+                exe_path.to_str().unwrap(),
                 "-target",
                 "x86_64-pc-windows-msvc",
                 obj_path.to_str().unwrap(),
@@ -178,8 +227,8 @@ fn main() {
         }
     }
 
-    let _ = fs::remove_file(&ll_path);
-    let _ = fs::remove_file(&obj_path);
+    // let _ = fs::remove_file(&ll_path);
+    // let _ = fs::remove_file(&obj_path);
 
-    println!("✓ {} generated successfully!", args.output);
+    println!("✓ {} generated successfully!", exe_path.display());
 }

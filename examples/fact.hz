@@ -7,7 +7,6 @@ fn factorial(n: i32) -> i32 {
 
 fn main() -> i32 {
     let result = factorial(5)
-    print("Factorial(5) = ")
-    print(result)
+    print("Factorial(5) = ", result)
     return 0
 }

@@ -23,22 +23,44 @@ huzc/
 │   ├── huzi-parser/     # 语法分析器
 │   ├── huzi-codegen/    # LLVM 代码生成
 │   └── huzi-error/      # 错误处理模块
+├── examples/            # 示例程序
+│   ├── hello.hz
+│   ├── array.hz         # 数组示例
+│   └── ...
 └── docs/
+    ├── USAGE.md         # 用户指南
+    └── TECHNICAL.md     # 技术文档
 ```
 
 ### 2.2 编译流程
 
 ```
-源代码 → 词法分析 → 语法分析 → AST → 语义分析 → LLVM IR → 优化 → 目标文件 → 可执行文件
+源代码 → 词法分析 → 语法分析 → AST → 代码生成 → LLVM IR → 目标文件 → 可执行文件
 ```
 
-## 3. 语言特性 (基础版)
+### 2.3 编译流程详解
+
+```
+[1/5] Lexing...     - 词法分析，生成 Token 流
+[2/5] Parsing...    - 语法分析，构建 AST
+[3/5] Compiling...  - 代码生成，生成 LLVM IR
+[4/5] Verifying...  - IR 验证
+[5/5] Generating... - 链接生成可执行文件
+```
+
+## 3. 语言特性
 
 ### 3.1 基础类型
-- `i32`, `i64`, `u32`, `u64`, `f32`, `f64` - 整数和浮点数
-- `bool` - 布尔值
-- `str` - 字符串
-- `char` - 字符
+| 类型 | 说明 | LLVM 类型 |
+|------|------|----------|
+| `i32` | 32 位整数 | `i32` |
+| `i64` | 64 位整数 | `i64` |
+| `f32` | 32 位浮点数 | `float` |
+| `f64` | 64 位浮点数 | `double` |
+| `bool` | 布尔值 | `i8` |
+| `str` | 字符串 | `i8*` |
+| `char` | 字符 | `i8` |
+| `[T; N]` | 数组 | `[N x T]` |
 
 ### 3.2 关键字
 ```
@@ -63,6 +85,10 @@ print   - 打印
 let x: i32 = 10
 let mut y = 20
 
+# 数组
+let arr = [1, 2, 3, 4, 5]
+let first = arr[0]
+
 # 函数定义
 fn add(a: i32, b: i32) -> i32 {
     return a + b
@@ -81,61 +107,162 @@ if x > 5 {
 for i in 0..10 {
     print(i)
 }
+
+# 标准库调用
+let r = sqrt(16.0)
+let s = concat("hello", "world")
+let n = read_int()
 ```
 
 ## 4. 模块设计
 
 ### 4.1 huzc (主 crate)
-- 命令行入口
+- 命令行入口 (clap)
 - 编译流程协调
 - 文件系统操作
+- 链接器调用 (clang/lld-link)
 
 ### 4.2 huzi-ast
 - AST 节点定义
-- AST 遍历工具
+- 类型定义 (`Type` enum)
+- 表达式定义 (`Expr` enum)
+- 语句定义 (`Stmt` enum)
 
 ### 4.3 huzi-lexer
 - Token 定义
 - 词法分析器实现
+- 支持注释 (`//`)
+- 支持字符串转义
 
 ### 4.4 huzi-parser
-- 语法规则定义
-- 解析器实现 (递归下降)
+- 递归下降解析器
+- 表达式优先级处理
+- 语句解析
+- 类型解析 (含数组类型)
 
 ### 4.5 huzi-codegen
 - LLVM 上下文管理
 - 代码生成
-- 目标代码发射
+  - 表达式代码生成
+  - 语句代码生成
+  - 函数代码生成
+- 标准库函数实现
+  - `print`, `read_line`, `read_int`, `read_float`
+  - `len`, `concat`, `to_string`
+  - `abs`, `sqrt`, `pow`, `sin`, `cos`
+- 数组支持
+  - 数组字面量
+  - 数组索引访问
 
 ### 4.6 huzi-error
 - 错误类型定义
 - 错误报告格式化
+- `HuziResult` 类型别名
 
 ## 5. 依赖版本
 
 ```toml
 inkwell = { version = "0.5.0", features = ["llvm18-0"] }
+clap = { version = "4.5", features = ["derive"] }
 ```
 
 ## 6. 开发计划
 
-### Phase 1: 基础设施
-- [ ] 创建 workspace 结构
-- [ ] 配置 inkwell 依赖
-- [ ] 实现错误处理模块
+### Phase 1: 基础设施 ✅
+- [x] 创建 workspace 结构
+- [x] 配置 inkwell 依赖
+- [x] 实现错误处理模块
 
-### Phase 2: 前端
-- [ ] 实现词法分析器
-- [ ] 实现语法分析器
-- [ ] 构建 AST
+### Phase 2: 前端 ✅
+- [x] 实现词法分析器
+- [x] 实现语法分析器
+- [x] 构建 AST
+- [x] 支持注释
 
-### Phase 3: 后端
-- [ ] 集成 LLVM
-- [ ] 实现代码生成
-- [ ] 支持可执行文件输出
+### Phase 3: 后端 ✅
+- [x] 集成 LLVM
+- [x] 实现代码生成
+- [x] 支持可执行文件输出
+- [x] 平台自适应 (Windows/Linux/macOS)
 
-### Phase 4: 语言特性
-- [ ] 变量和类型
-- [ ] 函数调用
-- [ ] 控制流
-- [ ] 基础标准库 (print)
+### Phase 4: 语言特性 ✅
+- [x] 变量和类型
+- [x] 函数调用
+- [x] 控制流
+- [x] 数组支持
+- [x] 标准库 (print, read_*, math, string)
+
+### Phase 5: 待开发
+- [ ] 结构体支持
+- [ ] 枚举和 match
+- [ ] 类型验证
+- [ ] 模块系统
+- [ ] 优化 passes
+- [ ] 调试信息
+
+## 7. 代码生成细节
+
+### 7.1 print 函数实现
+```rust
+// 使用 C printf
+let print_fn = self.context.i32_type().fn_type(
+    &[self.context.ptr_type(AddressSpace::default()).into()],
+    true,  // varargs
+);
+self.module.add_function("printf", print_fn, None);
+```
+
+### 7.2 数组实现
+```rust
+// 数组字面量 - 使用 alloca 和 store
+let array_ptr = self.build_alloca(array_type.into(), "array")?;
+for (i, val) in elements.iter().enumerate() {
+    let index = self.context.i32_type().const_int(i as u64, false);
+    let elem_ptr = build_gep(...);
+    build_store(elem_ptr, val);
+}
+
+// 数组索引 - 使用 GEP
+let elem_ptr = build_gep(array_ptr, &[index], "elem_ptr");
+let loaded = build_load(elem_ptr, "load_elem");
+```
+
+### 7.3 数学函数实现
+```rust
+// 声明外部 C 数学函数
+let sqrt_fn = self.context.f64_type().fn_type(
+    &[self.context.f64_type().into()], false
+);
+self.module.add_function("sqrt", sqrt_fn, None);
+```
+
+## 8. 平台适配
+
+### 8.1 文件扩展名
+| 平台 | 可执行文件 | 对象文件 |
+|------|-----------|---------|
+| Windows | `.exe` | `.obj` |
+| Linux | (无) | `.o` |
+| macOS | (无) | `.o` |
+
+### 8.2 链接器
+- **Windows**: 优先使用 `lld-link`，回退到 `clang`
+- **Linux/macOS**: 使用 `clang`
+
+## 9. 测试方法
+
+```bash
+# 编译示例
+cargo run --release --bin huzc -- --input examples/array.hz -o out/array
+
+# 运行测试
+./out/array.exe
+
+# 查看 LLVM IR
+cargo run --release --bin huzc -- --input examples/hello.hz --emit-llvm -o hello
+cat hello.ll
+```
+
+---
+
+**最后更新**: 2026-03-05

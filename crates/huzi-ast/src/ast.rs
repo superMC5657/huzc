@@ -13,6 +13,7 @@ pub enum Type {
     Char,
     Unit,
     Named(String),
+    Array(Box<Type>, usize), // Array<ElementType, Size>
 }
 
 impl fmt::Display for Type {
@@ -29,6 +30,7 @@ impl fmt::Display for Type {
             Type::Char => write!(f, "char"),
             Type::Unit => write!(f, "()"),
             Type::Named(name) => write!(f, "{}", name),
+            Type::Array(elem_type, size) => write!(f, "[{}; {}]", elem_type, size),
         }
     }
 }
@@ -117,6 +119,14 @@ pub enum Expr {
     Unary(UnaryExpr),
     Call(CallExpr),
     Assign(AssignExpr),
+    ArrayIndex(ArrayIndexExpr),
+    ArrayLiteral(Vec<Expr>),
+}
+
+#[derive(Debug, Clone)]
+pub struct ArrayIndexExpr {
+    pub array: Box<Expr>,
+    pub index: Box<Expr>,
 }
 
 #[derive(Debug, Clone)]

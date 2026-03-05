@@ -50,6 +50,7 @@ pub enum Token {
     RBracket,
     Comma,
     Colon,
+    Semi,
     Arrow,
     Dot,
     DotDot,

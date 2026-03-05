@@ -1,4 +1,0 @@
-fn main() -> i32 {
-    print("Hello from Fibonacci!")
-    return 0
-}

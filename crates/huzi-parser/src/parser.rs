@@ -206,6 +206,16 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> HuziResult<Type> {
+        // Check for array type: [T; N]
+        if self.check(&Token::LBracket) {
+            self.advance(); // consume '['
+            let elem_type = self.parse_type()?;
+            self.expect(&Token::Semi, "Expected ';' in array type")?;
+            let size = self.expect_integer("Expected array size")? as usize;
+            self.expect(&Token::RBracket, "Expected ']' in array type")?;
+            return Ok(Type::Array(Box::new(elem_type), size));
+        }
+
         let ty = match self.peek() {
             Token::Ident(name) => {
                 let t = Type::Named(name.clone());
@@ -376,6 +386,18 @@ impl Parser {
     fn parse_call_expression(&mut self) -> HuziResult<Expr> {
         let mut expr = self.parse_primary_expression()?;
 
+        // Parse array index: expr[index]
+        while self.check(&Token::LBracket) {
+            self.advance(); // consume '['
+            let index = self.parse_expression()?;
+            self.expect(&Token::RBracket, "Expected ']' after index")?;
+            expr = Expr::ArrayIndex(ArrayIndexExpr {
+                array: Box::new(expr),
+                index: Box::new(index),
+            });
+        }
+
+        // Parse function call: expr(args)
         while self.check(&Token::LParen) {
             self.advance();
 
@@ -447,14 +469,41 @@ impl Parser {
                 self.expect(&Token::RParen, "Expected ')' after expression")?;
                 Ok(expr)
             }
+            Token::LBracket => {
+                // Array literal: [1, 2, 3]
+                self.advance(); // consume '['
+                let mut elements = Vec::new();
+                if !self.check(&Token::RBracket) {
+                    loop {
+                        elements.push(self.parse_expression()?);
+                        if self.check(&Token::Comma) {
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                self.expect(&Token::RBracket, "Expected ']' after array literal")?;
+                Ok(Expr::ArrayLiteral(elements))
+            }
             Token::Print => {
                 self.advance();
                 self.expect(&Token::LParen, "Expected '(' after print")?;
-                let expr = self.parse_expression()?;
-                self.expect(&Token::RParen, "Expected ')' after print argument")?;
+                let mut arguments = Vec::new();
+                if !self.check(&Token::RParen) {
+                    loop {
+                        arguments.push(self.parse_expression()?);
+                        if self.check(&Token::Comma) {
+                            self.advance();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                self.expect(&Token::RParen, "Expected ')' after print arguments")?;
                 Ok(Expr::Call(CallExpr {
                     callee: Box::new(Expr::Ident("print".to_string())),
-                    arguments: vec![expr],
+                    arguments,
                 }))
             }
             _ => Err(HuziError::new(
@@ -529,6 +578,16 @@ impl Parser {
         if let Token::Ident(name) = token {
             self.advance();
             Ok(name)
+        } else {
+            Err(HuziError::new(msg, self.current_line(), self.current_col()))
+        }
+    }
+
+    fn expect_integer(&mut self, msg: &str) -> HuziResult<i64> {
+        let token = self.peek().clone();
+        if let Token::Int(n) = token {
+            self.advance();
+            Ok(n)
         } else {
             Err(HuziError::new(msg, self.current_line(), self.current_col()))
         }

@@ -83,7 +83,11 @@ impl Lexer {
                 self.advance();
                 Ok(Token::Colon)
             }
-            '.' => self.read_dot(),
+            ';' => {
+                self.advance();
+                Ok(Token::Semi)
+            }
+            '/' => self.read_slash(),
             '+' => {
                 self.advance();
                 Ok(Token::Plus)
@@ -93,14 +97,11 @@ impl Lexer {
                 self.advance();
                 Ok(Token::Star)
             }
-            '/' => {
-                self.advance();
-                Ok(Token::Slash)
-            }
             '%' => {
                 self.advance();
                 Ok(Token::Percent)
             }
+            '.' => self.read_dot(),
             '=' => self.read_equal(),
             '!' => self.read_bang(),
             '<' => self.read_less(),
@@ -134,7 +135,6 @@ impl Lexer {
 
     fn read_ident(&mut self) -> HuziResult<Token> {
         let start = self.pos;
-        let start_col = self.column;
         while !self.is_at_end() && (self.peek().is_alphanumeric() || self.peek() == '_') {
             self.advance();
             self.column += 1;
@@ -173,6 +173,12 @@ impl Lexer {
                     self.column += 1;
                 }
                 '.' if !has_dot => {
+                    if !self.is_at_end() {
+                        let next_pos = self.pos + 1;
+                        if next_pos < self.source.len() && self.source[next_pos] == '.' {
+                            break;
+                        }
+                    }
                     has_dot = true;
                     self.advance();
                     self.column += 1;
@@ -299,6 +305,29 @@ impl Lexer {
         } else {
             Ok(Token::Dot)
         }
+    }
+
+    fn read_slash(&mut self) -> HuziResult<Token> {
+        self.advance();
+        self.column += 1;
+
+        // Check for comment: //
+        if !self.is_at_end() && self.peek() == '/' {
+            // Skip until end of line
+            while !self.is_at_end() && self.peek() != '\n' {
+                self.advance();
+            }
+            // Skip the newline too
+            if !self.is_at_end() && self.peek() == '\n' {
+                self.advance();
+                self.line += 1;
+                self.column = 1;
+            }
+            // Continue lexing from next line
+            return self.next_token();
+        }
+
+        Ok(Token::Slash)
     }
 
     fn read_minus(&mut self) -> HuziResult<Token> {

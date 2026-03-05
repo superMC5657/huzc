@@ -17,6 +17,8 @@ cargo.lock
 *.exe
 *.ll
 *.bc
+*.obj
+*.o
 
 # OS generated files
 .DS_Store
