@@ -46,6 +46,8 @@ pub enum Stmt {
     Fn(FnStmt),
     Expr(ExprStmt),
     Return(ReturnStmt),
+    Break,
+    Continue,
     Block(Block),
     If(IfStmt),
     For(ForStmt),
@@ -121,6 +123,15 @@ pub enum Expr {
     Assign(AssignExpr),
     ArrayIndex(ArrayIndexExpr),
     ArrayLiteral(Vec<Expr>),
+    If(IfExpr),
+}
+
+/// If used as an expression: `let m = if cond { a } else { b }`
+#[derive(Debug, Clone)]
+pub struct IfExpr {
+    pub condition: Box<Expr>,
+    pub then_branch: Block,
+    pub else_branch: Block,
 }
 
 #[derive(Debug, Clone)]

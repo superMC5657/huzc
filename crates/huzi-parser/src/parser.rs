@@ -1,18 +1,20 @@
 use huzi_ast::*;
-use huzi_error::{HuziError, HuziResult};
+use huzi_error::HuziError;
+use huzi_error::Result;
+use huzi_lexer::SpannedToken;
 use huzi_lexer::Token;
 
 pub struct Parser {
-    tokens: Vec<Token>,
+    tokens: Vec<SpannedToken>,
     pos: usize,
 }
 
 impl Parser {
-    pub fn new(tokens: Vec<Token>) -> Self {
+    pub fn new(tokens: Vec<SpannedToken>) -> Self {
         Self { tokens, pos: 0 }
     }
 
-    pub fn parse(&mut self) -> HuziResult<Program> {
+    pub fn parse(&mut self) -> Result<Program> {
         let mut statements = Vec::new();
 
         while !self.is_at_end() {
@@ -22,13 +24,19 @@ impl Parser {
         Ok(Program { statements })
     }
 
-    fn parse_statement(&mut self) -> HuziResult<Stmt> {
+    fn parse_statement(&mut self) -> Result<Stmt> {
         if self.check_keyword(&[Token::Let]) {
             self.parse_let_statement()
         } else if self.check_keyword(&[Token::Fn]) {
             self.parse_fn_statement()
         } else if self.check_keyword(&[Token::Return]) {
             self.parse_return_statement()
+        } else if self.check_keyword(&[Token::Break]) {
+            self.advance();
+            Ok(Stmt::Break)
+        } else if self.check_keyword(&[Token::Continue]) {
+            self.advance();
+            Ok(Stmt::Continue)
         } else if self.check_keyword(&[Token::If]) {
             self.parse_if_statement()
         } else if self.check_keyword(&[Token::For]) {
@@ -43,15 +51,16 @@ impl Parser {
         }
     }
 
-    fn parse_let_statement(&mut self) -> HuziResult<Stmt> {
+    fn parse_let_statement(&mut self) -> Result<Stmt> {
         self.advance();
 
-        let name = self.expect_ident("Expected variable name")?;
-        let mutable = self.check_keyword(&[Token::Mut]);
-
+        // `let mut name` or `let name`
+        let mutable = self.check(&Token::Mut);
         if mutable {
             self.advance();
         }
+
+        let name = self.expect_ident("Expected variable name")?;
 
         let type_annotation = if self.check(&Token::Colon) {
             self.advance();
@@ -75,7 +84,7 @@ impl Parser {
         }))
     }
 
-    fn parse_fn_statement(&mut self) -> HuziResult<Stmt> {
+    fn parse_fn_statement(&mut self) -> Result<Stmt> {
         self.advance();
 
         let name = self.expect_ident("Expected function name")?;
@@ -117,7 +126,7 @@ impl Parser {
         }))
     }
 
-    fn parse_return_statement(&mut self) -> HuziResult<Stmt> {
+    fn parse_return_statement(&mut self) -> Result<Stmt> {
         self.advance();
 
         let value = if self.is_expr_start() {
@@ -129,7 +138,7 @@ impl Parser {
         Ok(Stmt::Return(ReturnStmt { value }))
     }
 
-    fn parse_if_statement(&mut self) -> HuziResult<Stmt> {
+    fn parse_if_statement(&mut self) -> Result<Stmt> {
         self.advance();
 
         let condition = self.parse_expression()?;
@@ -159,7 +168,7 @@ impl Parser {
         }))
     }
 
-    fn parse_for_statement(&mut self) -> HuziResult<Stmt> {
+    fn parse_for_statement(&mut self) -> Result<Stmt> {
         self.advance();
 
         let var_name = self.expect_ident("Expected loop variable name")?;
@@ -182,7 +191,7 @@ impl Parser {
         }))
     }
 
-    fn parse_while_statement(&mut self) -> HuziResult<Stmt> {
+    fn parse_while_statement(&mut self) -> Result<Stmt> {
         self.advance();
 
         let condition = self.parse_expression()?;
@@ -192,7 +201,7 @@ impl Parser {
         Ok(Stmt::While(WhileStmt { condition, body }))
     }
 
-    fn parse_block(&mut self) -> HuziResult<Block> {
+    fn parse_block(&mut self) -> Result<Block> {
         self.expect(&Token::LBrace, "Expected '{'")?;
 
         let mut statements = Vec::new();
@@ -205,7 +214,7 @@ impl Parser {
         Ok(Block { statements })
     }
 
-    fn parse_type(&mut self) -> HuziResult<Type> {
+    fn parse_type(&mut self) -> Result<Type> {
         // Check for array type: [T; N]
         if self.check(&Token::LBracket) {
             self.advance(); // consume '['
@@ -233,11 +242,33 @@ impl Parser {
         Ok(ty)
     }
 
-    fn parse_expression(&mut self) -> HuziResult<Expr> {
-        self.parse_or_expression()
+    fn parse_expression(&mut self) -> Result<Expr> {
+        // Assignment is the lowest-precedence expression: `x = ...`, `arr[i] = ...`
+        let expr = self.parse_or_expression()?;
+
+        if self.check(&Token::Equal) {
+            let target = match &expr {
+                Expr::Ident(_) | Expr::ArrayIndex(_) => expr,
+                _ => {
+                    return Err(HuziError::new(
+                        "Invalid assignment target",
+                        self.current_line(),
+                        self.current_col(),
+                    ))
+                }
+            };
+            self.advance();
+            let value = self.parse_expression()?;
+            return Ok(Expr::Assign(AssignExpr {
+                target: Box::new(target),
+                value: Box::new(value),
+            }));
+        }
+
+        Ok(expr)
     }
 
-    fn parse_or_expression(&mut self) -> HuziResult<Expr> {
+    fn parse_or_expression(&mut self) -> Result<Expr> {
         let mut left = self.parse_and_expression()?;
 
         while self.check(&Token::BarBar) {
@@ -253,7 +284,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_and_expression(&mut self) -> HuziResult<Expr> {
+    fn parse_and_expression(&mut self) -> Result<Expr> {
         let mut left = self.parse_equality_expression()?;
 
         while self.check(&Token::AmpAmp) {
@@ -269,7 +300,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_equality_expression(&mut self) -> HuziResult<Expr> {
+    fn parse_equality_expression(&mut self) -> Result<Expr> {
         let mut left = self.parse_comparison_expression()?;
 
         while self.check(&Token::EqualEqual) || self.check(&Token::BangEqual) {
@@ -290,7 +321,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_comparison_expression(&mut self) -> HuziResult<Expr> {
+    fn parse_comparison_expression(&mut self) -> Result<Expr> {
         let mut left = self.parse_additive_expression()?;
 
         while self.check(&Token::Less)
@@ -319,7 +350,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_additive_expression(&mut self) -> HuziResult<Expr> {
+    fn parse_additive_expression(&mut self) -> Result<Expr> {
         let mut left = self.parse_multiplicative_expression()?;
 
         while self.check(&Token::Plus) || self.check(&Token::Minus) {
@@ -340,7 +371,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_multiplicative_expression(&mut self) -> HuziResult<Expr> {
+    fn parse_multiplicative_expression(&mut self) -> Result<Expr> {
         let mut left = self.parse_unary_expression()?;
 
         while self.check(&Token::Star) || self.check(&Token::Slash) || self.check(&Token::Percent) {
@@ -363,7 +394,7 @@ impl Parser {
         Ok(left)
     }
 
-    fn parse_unary_expression(&mut self) -> HuziResult<Expr> {
+    fn parse_unary_expression(&mut self) -> Result<Expr> {
         if self.check(&Token::Bang) {
             self.advance();
             let operand = self.parse_unary_expression()?;
@@ -383,7 +414,7 @@ impl Parser {
         }
     }
 
-    fn parse_call_expression(&mut self) -> HuziResult<Expr> {
+    fn parse_call_expression(&mut self) -> Result<Expr> {
         let mut expr = self.parse_primary_expression()?;
 
         // Parse array index: expr[index]
@@ -421,7 +452,7 @@ impl Parser {
         Ok(expr)
     }
 
-    fn parse_primary_expression(&mut self) -> HuziResult<Expr> {
+    fn parse_primary_expression(&mut self) -> Result<Expr> {
         let token = self.peek().clone();
 
         match token {
@@ -451,16 +482,6 @@ impl Parser {
             }
             Token::Ident(name) => {
                 self.advance();
-
-                if self.check(&Token::Equal) && !self.is_at_end() {
-                    self.advance();
-                    let value = self.parse_expression()?;
-                    return Ok(Expr::Assign(AssignExpr {
-                        target: Box::new(Expr::Ident(name.clone())),
-                        value: Box::new(value),
-                    }));
-                }
-
                 Ok(Expr::Ident(name))
             }
             Token::LParen => {
@@ -486,31 +507,64 @@ impl Parser {
                 self.expect(&Token::RBracket, "Expected ']' after array literal")?;
                 Ok(Expr::ArrayLiteral(elements))
             }
-            Token::Print => {
-                self.advance();
-                self.expect(&Token::LParen, "Expected '(' after print")?;
-                let mut arguments = Vec::new();
-                if !self.check(&Token::RParen) {
-                    loop {
-                        arguments.push(self.parse_expression()?);
-                        if self.check(&Token::Comma) {
-                            self.advance();
-                        } else {
-                            break;
-                        }
-                    }
-                }
-                self.expect(&Token::RParen, "Expected ')' after print arguments")?;
-                Ok(Expr::Call(CallExpr {
-                    callee: Box::new(Expr::Ident("print".to_string())),
-                    arguments,
-                }))
-            }
+            Token::If => self.parse_if_expression(),
             _ => Err(HuziError::new(
                 format!("Unexpected token: {}", token),
                 self.current_line(),
                 self.current_col(),
             )),
+        }
+    }
+
+
+    /// If used as an expression: `let m = if c { a } else { b }`, with
+    /// `elif` chains folded into a nested expression.
+    fn parse_if_expression(&mut self) -> Result<Expr> {
+        self.advance();
+        let condition = self.parse_expression()?;
+        let then_branch = self.parse_block()?;
+
+        let mut elif_branches = Vec::new();
+        while self.check(&Token::Elif) {
+            self.advance();
+            let elif_cond = self.parse_expression()?;
+            let elif_block = self.parse_block()?;
+            elif_branches.push((elif_cond, elif_block));
+        }
+
+        self.expect(&Token::Else, "Expected 'else' after if expression")?;
+
+        let else_block = if self.check(&Token::If) {
+            let nested = self.parse_if_expression()?;
+            Block {
+                statements: vec![Stmt::Expr(ExprStmt { expr: nested })],
+            }
+        } else {
+            self.parse_block()?
+        };
+
+        let else_branch = Self::fold_elif_expr(&elif_branches, else_block);
+
+        Ok(Expr::If(IfExpr {
+            condition: Box::new(condition),
+            then_branch,
+            else_branch,
+        }))
+    }
+
+    /// Fold elif branches into nested if expressions as the else block.
+    fn fold_elif_expr(elifs: &[(Expr, Block)], else_b: Block) -> Block {
+        match elifs.split_first() {
+            None => else_b,
+            Some(((cond, block), rest)) => Block {
+                statements: vec![Stmt::Expr(ExprStmt {
+                    expr: Expr::If(IfExpr {
+                        condition: Box::new(cond.clone()),
+                        then_branch: block.clone(),
+                        else_branch: Self::fold_elif_expr(rest, else_b),
+                    }),
+                })],
+            },
         }
     }
 
@@ -525,9 +579,10 @@ impl Parser {
                 | Token::Char(_)
                 | Token::Ident(_)
                 | Token::LParen
+                | Token::LBracket
+                | Token::If
                 | Token::Bang
                 | Token::Minus
-                | Token::Print
         )
     }
 
@@ -557,14 +612,24 @@ impl Parser {
     }
 
     fn peek(&self) -> &Token {
-        &self.tokens[self.pos]
+        &self.tokens[self.pos].token
     }
 
-    fn is_at_end(&self) -> bool {
-        self.pos >= self.tokens.len() || matches!(self.peek(), Token::Eof)
+    fn current_line(&self) -> usize {
+        self.tokens
+            .get(self.pos)
+            .map(|t| t.line)
+            .unwrap_or(usize::MAX)
     }
 
-    fn expect(&mut self, token: &Token, msg: &str) -> HuziResult<()> {
+    fn current_col(&self) -> usize {
+        self.tokens
+            .get(self.pos)
+            .map(|t| t.column)
+            .unwrap_or(usize::MAX)
+    }
+
+    fn expect(&mut self, token: &Token, msg: &str) -> Result<()> {
         if self.check(token) {
             self.advance();
             Ok(())
@@ -573,9 +638,9 @@ impl Parser {
         }
     }
 
-    fn expect_ident(&mut self, msg: &str) -> HuziResult<String> {
-        let token = self.peek().clone();
-        if let Token::Ident(name) = token {
+    fn expect_ident(&mut self, msg: &str) -> Result<String> {
+        let token = self.tokens.get(self.pos).map(|t| t.token.clone());
+        if let Some(Token::Ident(name)) = token {
             self.advance();
             Ok(name)
         } else {
@@ -583,9 +648,9 @@ impl Parser {
         }
     }
 
-    fn expect_integer(&mut self, msg: &str) -> HuziResult<i64> {
-        let token = self.peek().clone();
-        if let Token::Int(n) = token {
+    fn expect_integer(&mut self, msg: &str) -> Result<i64> {
+        let token = self.tokens.get(self.pos).map(|t| t.token.clone());
+        if let Some(Token::Int(n)) = token {
             self.advance();
             Ok(n)
         } else {
@@ -593,11 +658,7 @@ impl Parser {
         }
     }
 
-    fn current_line(&self) -> usize {
-        1
-    }
-
-    fn current_col(&self) -> usize {
-        1
+    fn is_at_end(&self) -> bool {
+        self.pos >= self.tokens.len() || self.peek() == &Token::Eof
     }
 }

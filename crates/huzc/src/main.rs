@@ -81,6 +81,44 @@ fn run_command(cmd: &str, args: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
+/// Locate the Windows SDK ucrt/um lib directories. Uses the environment set by
+/// a VS developer prompt when available; otherwise falls back to a known path.
+fn get_sdk_libpaths() -> (Option<String>, Option<String>) {
+    let sdk_dir = std::env::var("WindowsSdkDir").ok();
+    let sdk_ver = std::env::var("WindowsSDKVersion")
+        .ok()
+        .map(|v| v.trim_end_matches('\\').to_string());
+
+    if let (Some(dir), Some(ver)) = (&sdk_dir, &sdk_ver) {
+        let base = Path::new(dir).join("lib").join(ver);
+        return (
+            Some(base.join("ucrt").join("x64").to_string_lossy().into_owned()),
+            Some(base.join("um").join("x64").to_string_lossy().into_owned()),
+        );
+    }
+
+    // Fallback: newest installed Windows Kits version.
+    let kits = Path::new("C:\\Program Files (x86)\\Windows Kits\\10\\lib");
+    if let Ok(entries) = fs::read_dir(kits) {
+        let mut versions: Vec<_> = entries
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().is_dir())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("10."))
+            .collect();
+        versions.sort();
+        if let Some(ver) = versions.pop() {
+            let base = kits.join(ver);
+            return (
+                Some(base.join("ucrt").join("x64").to_string_lossy().into_owned()),
+                Some(base.join("um").join("x64").to_string_lossy().into_owned()),
+            );
+        }
+    }
+
+    (None, None)
+}
+
 fn main() {
     let args = Args::parse();
 
@@ -117,23 +155,25 @@ fn main() {
 
     // [4/5] Verifying
     println!("[4/5] Verifying...");
-    if !codegen.verify() {
-        eprintln!("Warning: Verification failed, but continuing...");
-    }
-
-    // [5/5] Generating executable
-    println!("[5/5] Generating executable...");
 
     // Build paths
     let exe_path = build_output_path(&args.output);
     let ll_path = build_intermediate_path(&args.output, "ll");
     let obj_path = build_intermediate_path(&args.output, get_obj_ext());
 
-    // Write LLVM IR
+    // Write LLVM IR before verifying so it can be inspected on failure.
     if let Err(e) = codegen.write_ir_to_file(ll_path.to_str().unwrap()) {
         eprintln!("Error writing IR: {}", e);
         std::process::exit(1);
     }
+
+    if !codegen.verify() {
+        eprintln!("Error: LLVM module verification failed (this is a compiler bug)");
+        std::process::exit(1);
+    }
+
+    // [5/5] Generating executable
+    println!("[5/5] Generating executable...");
 
     // Compile IR to object file
     println!("  Compiling LLVM IR to object file...");
@@ -151,16 +191,23 @@ fn main() {
     println!("  Linking to executable...");
 
     // Try lld-link first (Windows)
-    let lld_args = [
+    let (ucrt_path, um_path) = get_sdk_libpaths();
+    let mut lld_args: Vec<String> = vec![
         format!("/OUT:{}", exe_path.to_str().unwrap()),
         "/ENTRY:main".to_string(),
-        "/LIBPATH:C:\\Program Files (x86)\\Windows Kits\\10\\lib\\10.0.26100.0\\ucrt\\x64".to_string(),
-        "/LIBPATH:C:\\Program Files (x86)\\Windows Kits\\10\\lib\\10.0.26100.0\\um\\x64".to_string(),
+    ];
+    if let Some(p) = &ucrt_path {
+        lld_args.push(format!("/LIBPATH:{}", p));
+    }
+    if let Some(p) = &um_path {
+        lld_args.push(format!("/LIBPATH:{}", p));
+    }
+    lld_args.extend([
         "/DEFAULTLIB:ucrt.lib".to_string(),
         "/DEFAULTLIB:msvcrt.lib".to_string(),
         "/DEFAULTLIB:legacy_stdio_definitions.lib".to_string(),
         obj_path.to_str().unwrap().to_string(),
-    ];
+    ]);
     let lld_args_ref: Vec<&str> = lld_args.iter().map(|s| s.as_str()).collect();
 
     let lld_success = run_command("lld-link", &lld_args_ref).is_ok();

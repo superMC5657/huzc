@@ -42,5 +42,3 @@ impl fmt::Display for HuziError {
 impl std::error::Error for HuziError {}
 
 pub type Result<T> = std::result::Result<T, HuziError>;
-
-pub type HuziResult<T> = std::result::Result<T, HuziError>;

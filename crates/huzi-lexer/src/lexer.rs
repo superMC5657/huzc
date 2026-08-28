@@ -1,5 +1,5 @@
-use crate::token::Token;
-use huzi_error::{HuziError, HuziResult};
+use crate::token::{SpannedToken, Token};
+use huzi_error::Result;
 
 pub struct Lexer {
     source: Vec<char>,
@@ -18,107 +18,75 @@ impl Lexer {
         }
     }
 
-    pub fn tokenize(&mut self) -> HuziResult<Vec<Token>> {
+    pub fn tokenize(&mut self) -> Result<Vec<SpannedToken>> {
         let mut tokens = Vec::new();
         loop {
             let token = self.next_token()?;
-            if token == Token::Eof {
-                tokens.push(token);
+            let is_eof = token.token == Token::Eof;
+            tokens.push(token);
+            if is_eof {
                 break;
             }
-            tokens.push(token);
         }
         Ok(tokens)
     }
 
-    fn next_token(&mut self) -> HuziResult<Token> {
+    fn next_token(&mut self) -> Result<SpannedToken> {
         self.skip_whitespace();
 
+        let (line, column) = (self.line, self.column);
+
         if self.is_at_end() {
-            return Ok(Token::Eof);
+            return Ok(SpannedToken { token: Token::Eof, line, column });
         }
 
         let c = self.peek();
 
-        if c.is_alphabetic() || c == '_' {
-            return self.read_ident();
-        }
+        let token = if c.is_alphabetic() || c == '_' {
+            self.read_ident()?
+        } else if c.is_numeric() {
+            self.read_number()?
+        } else {
+            match c {
+                '"' => self.read_string()?,
+                '\'' => self.read_char()?,
+                '(' => self.single(Token::LParen),
+                ')' => self.single(Token::RParen),
+                '{' => self.single(Token::LBrace),
+                '}' => self.single(Token::RBrace),
+                '[' => self.single(Token::LBracket),
+                ']' => self.single(Token::RBracket),
+                ',' => self.single(Token::Comma),
+                ':' => self.single(Token::Colon),
+                ';' => self.single(Token::Semi),
+                '/' => self.read_slash()?,
+                '+' => self.single(Token::Plus),
+                '-' => self.read_minus()?,
+                '*' => self.single(Token::Star),
+                '%' => self.single(Token::Percent),
+                '.' => self.read_dot()?,
+                '=' => self.read_equal()?,
+                '!' => self.read_bang()?,
+                '<' => self.read_less()?,
+                '>' => self.read_greater()?,
+                '&' => self.read_amp()?,
+                '|' => self.read_bar()?,
+                _ => {
+                    return Err(huzi_error::HuziError::new(
+                        format!("Unexpected character '{}'", c),
+                        line,
+                        column,
+                    ))
+                }
+            }
+        };
 
-        if c.is_numeric() {
-            return self.read_number();
-        }
+        Ok(SpannedToken { token, line, column })
+    }
 
-        match c {
-            '"' => self.read_string(),
-            '\'' => self.read_char(),
-            '(' => {
-                self.advance();
-                Ok(Token::LParen)
-            }
-            ')' => {
-                self.advance();
-                Ok(Token::RParen)
-            }
-            '{' => {
-                self.advance();
-                Ok(Token::LBrace)
-            }
-            '}' => {
-                self.advance();
-                Ok(Token::RBrace)
-            }
-            '[' => {
-                self.advance();
-                Ok(Token::LBracket)
-            }
-            ']' => {
-                self.advance();
-                Ok(Token::RBracket)
-            }
-            ',' => {
-                self.advance();
-                Ok(Token::Comma)
-            }
-            ':' => {
-                self.advance();
-                Ok(Token::Colon)
-            }
-            ';' => {
-                self.advance();
-                Ok(Token::Semi)
-            }
-            '/' => self.read_slash(),
-            '+' => {
-                self.advance();
-                Ok(Token::Plus)
-            }
-            '-' => self.read_minus(),
-            '*' => {
-                self.advance();
-                Ok(Token::Star)
-            }
-            '%' => {
-                self.advance();
-                Ok(Token::Percent)
-            }
-            '.' => self.read_dot(),
-            '=' => self.read_equal(),
-            '!' => self.read_bang(),
-            '<' => self.read_less(),
-            '>' => self.read_greater(),
-            '&' => self.read_amp(),
-            '|' => self.read_bar(),
-            '\n' => {
-                self.advance();
-                self.line += 1;
-                self.column = 1;
-                self.next_token()
-            }
-            _ => {
-                self.advance();
-                Ok(Token::Unknown)
-            }
-        }
+    fn single(&mut self, token: Token) -> Token {
+        self.advance();
+        token
     }
 
     fn skip_whitespace(&mut self) {
@@ -126,7 +94,6 @@ impl Lexer {
             match self.peek() {
                 ' ' | '\t' | '\r' => {
                     self.advance();
-                    self.column += 1;
                 }
                 '\n' => {
                     self.advance();
@@ -137,42 +104,35 @@ impl Lexer {
                 '/' => {
                     // Check for // comment
                     if self.pos + 1 < self.source.len() && self.source[self.pos + 1] == '/' {
-                        // Skip until end of line
-                        while !self.is_at_end() && self.peek() != '\n' {
-                            self.advance();
-                        }
-                        // Skip the newline too
-                        if !self.is_at_end() && self.peek() == '\n' {
-                            self.advance();
-                            self.line += 1;
-                            self.column = 1;
-                        }
+                        self.skip_line_comment();
                     } else {
                         break;
                     }
                 }
                 '#' => {
-                    // Skip until end of line
-                    while !self.is_at_end() && self.peek() != '\n' {
-                        self.advance();
-                    }
-                    // Skip the newline too
-                    if !self.is_at_end() && self.peek() == '\n' {
-                        self.advance();
-                        self.line += 1;
-                        self.column = 1;
-                    }
+                    self.skip_line_comment();
                 }
                 _ => break,
             }
         }
     }
 
-    fn read_ident(&mut self) -> HuziResult<Token> {
+    fn skip_line_comment(&mut self) {
+        while !self.is_at_end() && self.peek() != '\n' {
+            self.advance();
+        }
+        // Skip the newline too
+        if !self.is_at_end() && self.peek() == '\n' {
+            self.advance();
+            self.line += 1;
+            self.column = 1;
+        }
+    }
+
+    fn read_ident(&mut self) -> Result<Token> {
         let start = self.pos;
         while !self.is_at_end() && (self.peek().is_alphanumeric() || self.peek() == '_') {
             self.advance();
-            self.column += 1;
         }
 
         let ident: String = self.source[start..self.pos].iter().collect();
@@ -188,16 +148,17 @@ impl Lexer {
             "in" => Token::In,
             "while" => Token::While,
             "return" => Token::Return,
+            "break" => Token::Break,
+            "continue" => Token::Continue,
             "true" => Token::True,
             "false" => Token::False,
-            "print" => Token::Print,
             _ => Token::Ident(ident),
         };
 
         Ok(token)
     }
 
-    fn read_number(&mut self) -> HuziResult<Token> {
+    fn read_number(&mut self) -> Result<Token> {
         let start = self.pos;
         let mut has_dot = false;
 
@@ -205,18 +166,14 @@ impl Lexer {
             match self.peek() {
                 '0'..='9' => {
                     self.advance();
-                    self.column += 1;
                 }
                 '.' if !has_dot => {
-                    if !self.is_at_end() {
-                        let next_pos = self.pos + 1;
-                        if next_pos < self.source.len() && self.source[next_pos] == '.' {
-                            break;
-                        }
+                    // Don't consume the dot of a range expression: 1..5
+                    if self.pos + 1 < self.source.len() && self.source[self.pos + 1] == '.' {
+                        break;
                     }
                     has_dot = true;
                     self.advance();
-                    self.column += 1;
                 }
                 _ => break,
             }
@@ -227,24 +184,23 @@ impl Lexer {
         if has_dot {
             let val: f64 = num_str
                 .parse()
-                .map_err(|_| HuziError::new("Invalid float", self.line, self.column))?;
+                .map_err(|_| huzi_error::HuziError::new("Invalid float", self.line, self.column))?;
             Ok(Token::Float(val))
         } else {
-            let val: i64 = num_str
-                .parse()
-                .map_err(|_| HuziError::new("Invalid integer", self.line, self.column))?;
+            let val: i64 = num_str.parse().map_err(|_| {
+                huzi_error::HuziError::new("Invalid integer", self.line, self.column)
+            })?;
             Ok(Token::Int(val))
         }
     }
 
-    fn read_string(&mut self) -> HuziResult<Token> {
+    fn read_string(&mut self) -> Result<Token> {
         self.advance();
-        self.column += 1;
         let mut value = String::new();
 
         while !self.is_at_end() && self.peek() != '"' {
             if self.peek() == '\n' {
-                return Err(HuziError::new(
+                return Err(huzi_error::HuziError::new(
                     "Unterminated string",
                     self.line,
                     self.column,
@@ -252,9 +208,8 @@ impl Lexer {
             }
             if self.peek() == '\\' {
                 self.advance();
-                self.column += 1;
                 if self.is_at_end() {
-                    return Err(HuziError::new(
+                    return Err(huzi_error::HuziError::new(
                         "Unterminated string",
                         self.line,
                         self.column,
@@ -266,18 +221,18 @@ impl Lexer {
                     'r' => '\r',
                     '\\' => '\\',
                     '"' => '"',
-                    _ => self.peek(),
+                    '0' => '\0',
+                    other => other,
                 };
                 value.push(escaped);
             } else {
                 value.push(self.peek());
             }
             self.advance();
-            self.column += 1;
         }
 
         if self.is_at_end() {
-            return Err(HuziError::new(
+            return Err(huzi_error::HuziError::new(
                 "Unterminated string",
                 self.line,
                 self.column,
@@ -285,24 +240,29 @@ impl Lexer {
         }
 
         self.advance();
-        self.column += 1;
 
         Ok(Token::String(value))
     }
 
-    fn read_char(&mut self) -> HuziResult<Token> {
+    fn read_char(&mut self) -> Result<Token> {
         self.advance();
-        self.column += 1;
 
         if self.is_at_end() {
-            return Err(HuziError::new("Unterminated char", self.line, self.column));
+            return Err(huzi_error::HuziError::new(
+                "Unterminated char",
+                self.line,
+                self.column,
+            ));
         }
 
         let c = if self.peek() == '\\' {
             self.advance();
-            self.column += 1;
             if self.is_at_end() {
-                return Err(HuziError::new("Unterminated char", self.line, self.column));
+                return Err(huzi_error::HuziError::new(
+                    "Unterminated char",
+                    self.line,
+                    self.column,
+                ));
             }
             match self.peek() {
                 'n' => '\n',
@@ -310,149 +270,127 @@ impl Lexer {
                 'r' => '\r',
                 '\\' => '\\',
                 '\'' => '\'',
-                _ => self.peek(),
+                '0' => '\0',
+                other => other,
             }
         } else {
             self.peek()
         };
 
         self.advance();
-        self.column += 1;
 
         if self.is_at_end() || self.peek() != '\'' {
-            return Err(HuziError::new("Unterminated char", self.line, self.column));
+            return Err(huzi_error::HuziError::new(
+                "Unterminated char",
+                self.line,
+                self.column,
+            ));
         }
 
         self.advance();
-        self.column += 1;
 
         Ok(Token::Char(c))
     }
 
-    fn read_dot(&mut self) -> HuziResult<Token> {
+    fn read_dot(&mut self) -> Result<Token> {
         self.advance();
-        self.column += 1;
 
         if !self.is_at_end() && self.peek() == '.' {
             self.advance();
-            self.column += 1;
             Ok(Token::DotDot)
         } else {
             Ok(Token::Dot)
         }
     }
 
-    fn read_slash(&mut self) -> HuziResult<Token> {
+    fn read_slash(&mut self) -> Result<Token> {
         self.advance();
-        self.column += 1;
-
-        // Check for comment: //
-        if !self.is_at_end() && self.peek() == '/' {
-            // Skip until end of line
-            while !self.is_at_end() && self.peek() != '\n' {
-                self.advance();
-            }
-            // Skip the newline too
-            if !self.is_at_end() && self.peek() == '\n' {
-                self.advance();
-                self.line += 1;
-                self.column = 1;
-            }
-            // Continue lexing from next line
-            return self.next_token();
-        }
-
+        // `//` comments at token start are already handled by skip_whitespace.
         Ok(Token::Slash)
     }
 
-    fn read_minus(&mut self) -> HuziResult<Token> {
+    fn read_minus(&mut self) -> Result<Token> {
         self.advance();
-        self.column += 1;
 
         if !self.is_at_end() && self.peek() == '>' {
             self.advance();
-            self.column += 1;
             Ok(Token::Arrow)
         } else {
             Ok(Token::Minus)
         }
     }
 
-    fn read_equal(&mut self) -> HuziResult<Token> {
+    fn read_equal(&mut self) -> Result<Token> {
         self.advance();
-        self.column += 1;
 
         if !self.is_at_end() && self.peek() == '=' {
             self.advance();
-            self.column += 1;
             Ok(Token::EqualEqual)
         } else {
             Ok(Token::Equal)
         }
     }
 
-    fn read_bang(&mut self) -> HuziResult<Token> {
+    fn read_bang(&mut self) -> Result<Token> {
         self.advance();
-        self.column += 1;
 
         if !self.is_at_end() && self.peek() == '=' {
             self.advance();
-            self.column += 1;
             Ok(Token::BangEqual)
         } else {
             Ok(Token::Bang)
         }
     }
 
-    fn read_less(&mut self) -> HuziResult<Token> {
+    fn read_less(&mut self) -> Result<Token> {
         self.advance();
-        self.column += 1;
 
         if !self.is_at_end() && self.peek() == '=' {
             self.advance();
-            self.column += 1;
             Ok(Token::LessEqual)
         } else {
             Ok(Token::Less)
         }
     }
 
-    fn read_greater(&mut self) -> HuziResult<Token> {
+    fn read_greater(&mut self) -> Result<Token> {
         self.advance();
-        self.column += 1;
 
         if !self.is_at_end() && self.peek() == '=' {
             self.advance();
-            self.column += 1;
             Ok(Token::GreaterEqual)
         } else {
             Ok(Token::Greater)
         }
     }
 
-    fn read_amp(&mut self) -> HuziResult<Token> {
+    fn read_amp(&mut self) -> Result<Token> {
         self.advance();
-        self.column += 1;
 
         if !self.is_at_end() && self.peek() == '&' {
             self.advance();
-            self.column += 1;
             Ok(Token::AmpAmp)
         } else {
-            Ok(Token::Unknown)
+            Err(huzi_error::HuziError::new(
+                "Unexpected character '&' (did you mean '&&'?)",
+                self.line,
+                self.column,
+            ))
         }
     }
 
-    fn read_bar(&mut self) -> HuziResult<Token> {
+    fn read_bar(&mut self) -> Result<Token> {
         self.advance();
-        self.column += 1;
 
         if !self.is_at_end() && self.peek() == '|' {
             self.advance();
-            self.column += 1;
             Ok(Token::BarBar)
         } else {
-            Ok(Token::Unknown)
+            Err(huzi_error::HuziError::new(
+                "Unexpected character '|' (did you mean '||'?)",
+                self.line,
+                self.column,
+            ))
         }
     }
 
@@ -463,6 +401,7 @@ impl Lexer {
     fn advance(&mut self) {
         if !self.is_at_end() {
             self.pos += 1;
+            self.column += 1;
         }
     }
 

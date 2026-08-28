@@ -13,9 +13,10 @@ pub enum Token {
     In,
     While,
     Return,
+    Break,
+    Continue,
     True,
     False,
-    Print,
 
     // Literals
     Ident(String),
@@ -57,7 +58,14 @@ pub enum Token {
 
     // Special
     Eof,
-    Unknown,
+}
+
+/// A token together with its source position (1-based line/column).
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpannedToken {
+    pub token: Token,
+    pub line: usize,
+    pub column: usize,
 }
 
 impl fmt::Display for Token {
