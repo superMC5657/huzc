@@ -14,7 +14,7 @@ fn parse(src: &str) -> Program {
 #[test]
 fn multiplication_binds_tighter_than_addition() {
     let program = parse("let r = 1 + 2 * 3");
-    let Stmt::Let(let_stmt) = &program.statements[0] else {
+    let Stmt::Let(let_stmt) = &program.statements[0].node else {
         panic!("expected a let statement");
     };
     let Some(Expr::Binary(add)) = &let_stmt.value else {
@@ -34,11 +34,11 @@ fn multiplication_binds_tighter_than_addition() {
 fn let_mut_is_parsed_as_mutable() {
     let program = parse("let mut x = 1
 let y = 2");
-    let Stmt::Let(mutable) = &program.statements[0] else {
+    let Stmt::Let(mutable) = &program.statements[0].node else {
         panic!("expected a let statement");
     };
     assert!(mutable.mutable);
-    let Stmt::Let(immutable) = &program.statements[1] else {
+    let Stmt::Let(immutable) = &program.statements[1].node else {
         panic!("expected a let statement");
     };
     assert!(!immutable.mutable);
@@ -49,7 +49,7 @@ fn if_elif_else_structure() {
     let program = parse(
         "if x > 0 { let a = 1 } elif x < 0 { let b = 2 } else { let c = 3 }",
     );
-    let Stmt::If(if_stmt) = &program.statements[0] else {
+    let Stmt::If(if_stmt) = &program.statements[0].node else {
         panic!("expected an if statement");
     };
     assert_eq!(if_stmt.then_branch.statements.len(), 1);
@@ -60,7 +60,7 @@ fn if_elif_else_structure() {
 #[test]
 fn import_parses_dotted_name() {
     let program = parse("import mods.helpers");
-    let Stmt::Import(imp) = &program.statements[0] else {
+    let Stmt::Import(imp) = &program.statements[0].node else {
         panic!("expected an import statement");
     };
     assert_eq!(imp.name, "mods.helpers");

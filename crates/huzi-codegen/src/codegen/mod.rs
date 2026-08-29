@@ -15,7 +15,7 @@ fn program_struct_definitions(program: &Program) -> Vec<StructDef> {
     program
         .statements
         .iter()
-        .filter_map(|s| match s {
+        .filter_map(|s| match &s.node {
             Stmt::Struct(d) => Some(d.clone()),
             _ => None,
         })
@@ -27,7 +27,7 @@ fn program_enum_definitions(program: &Program) -> Vec<EnumDef> {
     program
         .statements
         .iter()
-        .filter_map(|s| match s {
+        .filter_map(|s| match &s.node {
             Stmt::Enum(d) => Some(d.clone()),
             _ => None,
         })
@@ -46,7 +46,7 @@ fn module_fn_statements(program: &Program) -> Vec<FnStmt> {
     program
         .statements
         .iter()
-        .filter_map(|s| match s {
+        .filter_map(|s| match &s.node {
             Stmt::Fn(f) => Some(f.clone()),
             _ => None,
         })
@@ -226,7 +226,7 @@ impl<'ctx> CodeGen<'ctx> {
         Ok(program
             .statements
             .iter()
-            .filter_map(|s| match s {
+            .filter_map(|s| match &s.node {
                 Stmt::Fn(f) => Some(f.clone()),
                 _ => None,
             })
@@ -270,12 +270,12 @@ impl<'ctx> CodeGen<'ctx> {
     /// if the program only has top-level code.
     fn compile_top_level(&mut self, program: &Program, fn_stmts: &[FnStmt]) -> Result<()> {
         let has_main = fn_stmts.iter().any(|f| f.name == "main");
-        let top_level: Vec<&Stmt> = program
+        let top_level: Vec<&Spanned<Stmt>> = program
             .statements
             .iter()
             .filter(|s| {
                 !matches!(
-                    s,
+                    &s.node,
                     Stmt::Fn(_) | Stmt::Struct(_) | Stmt::Enum(_) | Stmt::Import(_)
                 )
             })
@@ -307,7 +307,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.scopes = vec![HashMap::new()];
 
         for stmt in &top_level {
-            self.compile_stmt(stmt)?;
+            self.compile_stmt(&stmt.node, stmt.span)?;
         }
 
         if self.at_open_end() {

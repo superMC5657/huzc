@@ -6,7 +6,8 @@ use huzi_ast::*;
 use huzi_error::{HuziError, Result};
 
 impl<'ctx> CodeGen<'ctx> {
-    pub(super) fn compile_stmt(&mut self, stmt: &Stmt) -> Result<()> {
+    pub(super) fn compile_stmt(&mut self, stmt: &Stmt, span: Span) -> Result<()> {
+        let _ = span; // 调试信息(提交 2)在此按语句位置设置 debug location
         match stmt {
             Stmt::Let(let_stmt) => self.compile_let(let_stmt),
             Stmt::Struct(_) => Err(HuziError::new_global(
@@ -26,7 +27,7 @@ impl<'ctx> CodeGen<'ctx> {
             Stmt::Break => self.compile_break(),
             Stmt::Continue => self.compile_continue(),
             Stmt::Block(block) => self.compile_block(block),
-            Stmt::If(if_stmt) => self.compile_if(if_stmt),
+            Stmt::If(if_stmt) => self.compile_if(if_stmt, span),
             Stmt::For(for_stmt) => self.compile_for(for_stmt),
             Stmt::While(while_stmt) => self.compile_while(while_stmt),
         }
@@ -244,7 +245,7 @@ impl<'ctx> CodeGen<'ctx> {
     pub(super) fn compile_block(&mut self, block: &Block) -> Result<()> {
         self.push_scope();
         for stmt in &block.statements {
-            self.compile_stmt(stmt)?;
+            self.compile_stmt(&stmt.node, stmt.span)?;
         }
         self.pop_scope();
         Ok(())
@@ -256,36 +257,44 @@ impl<'ctx> CodeGen<'ctx> {
         self.push_scope();
         let mut last: Option<inkwell::values::BasicValueEnum<'ctx>> = None;
         for stmt in &block.statements {
-            match stmt {
+            match &stmt.node {
                 Stmt::Expr(es) => last = Some(self.compile_expr(&es.expr)?),
-                other => self.compile_stmt(other)?,
+                other => self.compile_stmt(other, stmt.span)?,
             }
         }
         self.pop_scope();
         last.ok_or_else(|| HuziError::new_global("Block used as an expression must end with a value"))
     }
 
-    pub(super) fn compile_if(&mut self, stmt: &IfStmt) -> Result<()> {
+    pub(super) fn compile_if(&mut self, stmt: &IfStmt, span: Span) -> Result<()> {
         // Fold the elif chain into nested if/else so each branch is compiled.
         let else_block: Option<Block> = if stmt.elif_branches.is_empty() {
             stmt.else_branch.clone()
         } else {
-            let nested = Self::fold_elif(&stmt.elif_branches, stmt.else_branch.as_ref());
+            let nested = Self::fold_elif(&stmt.elif_branches, stmt.else_branch.as_ref(), span);
             Some(Block {
-                statements: vec![Stmt::If(nested)],
+                statements: vec![Spanned::new(Stmt::If(nested), span.line, span.column)],
             })
         };
 
         self.compile_branch(&stmt.condition, &stmt.then_branch, else_block.as_ref())
     }
 
-    pub(super) fn fold_elif(elifs: &[(Expr, Block)], else_b: Option<&Block>) -> IfStmt {
+    pub(super) fn fold_elif(
+        elifs: &[(Expr, Block)],
+        else_b: Option<&Block>,
+        span: Span,
+    ) -> IfStmt {
         let (first, rest) = elifs.split_first().expect("elif list is not empty");
         let inner_else = if rest.is_empty() {
             else_b.cloned()
         } else {
             Some(Block {
-                statements: vec![Stmt::If(Self::fold_elif(rest, else_b))],
+                statements: vec![Spanned::new(
+                    Stmt::If(Self::fold_elif(rest, else_b, span)),
+                    span.line,
+                    span.column,
+                )],
             })
         };
         IfStmt {

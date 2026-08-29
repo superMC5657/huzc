@@ -46,9 +46,33 @@ impl fmt::Display for Type {
     }
 }
 
+/// 源码位置(1-based 行列号),与 lexer 的 `SpannedToken` 对齐。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Span {
+    pub line: usize,
+    pub column: usize,
+}
+
+/// 携带源码位置的 AST 节点包裹。语句级粒度即可满足
+/// 调试行号/断点/单步的需求。
+#[derive(Debug, Clone)]
+pub struct Spanned<T> {
+    pub node: T,
+    pub span: Span,
+}
+
+impl<T> Spanned<T> {
+    pub fn new(node: T, line: usize, column: usize) -> Self {
+        Self {
+            node,
+            span: Span { line, column },
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Program {
-    pub statements: Vec<Stmt>,
+    pub statements: Vec<Spanned<Stmt>>,
 }
 
 #[derive(Debug, Clone)]
@@ -135,7 +159,7 @@ pub struct ReturnStmt {
 
 #[derive(Debug, Clone)]
 pub struct Block {
-    pub statements: Vec<Stmt>,
+    pub statements: Vec<Spanned<Stmt>>,
 }
 
 #[derive(Debug, Clone)]

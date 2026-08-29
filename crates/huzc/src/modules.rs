@@ -34,7 +34,7 @@ pub fn load_modules(program: &mut Program, base_dir: &Path) -> Vec<(String, Opti
 /// 取出主程序中的 import 语句并从语句列表中移除。
 fn extract_imports(program: &mut Program) -> Vec<String> {
     let mut names = Vec::new();
-    program.statements.retain(|stmt| match stmt {
+    program.statements.retain(|stmt| match &stmt.node {
         Stmt::Import(imp) => {
             names.push(imp.name.clone());
             false
@@ -119,7 +119,7 @@ fn resolve_module_file(import_name: &str, base_dir: &Path) -> PathBuf {
 fn validate_module_program(name: &str, program: &Program) {
     for stmt in &program.statements {
         if !matches!(
-            stmt,
+            &stmt.node,
             Stmt::Fn(_) | Stmt::Struct(_) | Stmt::Enum(_) | Stmt::Import(_)
         ) {
             die(format!(

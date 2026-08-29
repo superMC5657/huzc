@@ -21,10 +21,9 @@ impl Parser {
             let body = if self.check(&Token::LBrace) {
                 self.parse_block()?
             } else {
+                let (line, col) = (self.current_line(), self.current_col());
                 let expr = self.parse_expression()?;
-                Block {
-                    statements: vec![Stmt::Expr(ExprStmt { expr })],
-                }
+                self.expr_block(expr, line, col)
             };
 
             arms.push(MatchArm { pattern, body });

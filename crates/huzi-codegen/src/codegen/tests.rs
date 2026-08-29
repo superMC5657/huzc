@@ -1,34 +1,39 @@
 use super::*;
 use crate::CodeGen;
 
+/// 单元测试不关心位置,统一用 (1,1) 包裹。
+fn sp(stmt: Stmt) -> Spanned<Stmt> {
+    Spanned::new(stmt, 1, 1)
+}
+
 /// Build a program with a single `fn main() -> i32` carrying `body`.
-fn main_program(body: Vec<Stmt>) -> Program {
+fn main_program(body: Vec<Spanned<Stmt>>) -> Program {
     Program {
-        statements: vec![Stmt::Fn(FnStmt {
+        statements: vec![sp(Stmt::Fn(FnStmt {
             name: "main".to_string(),
             params: vec![],
             return_type: Some(Type::I32),
             body: Block { statements: body },
-        })],
+        }))],
     }
 }
 
-fn let_stmt(name: &str, value: Expr) -> Stmt {
-    Stmt::Let(LetStmt {
+fn let_stmt(name: &str, value: Expr) -> Spanned<Stmt> {
+    sp(Stmt::Let(LetStmt {
         name: name.to_string(),
         mutable: false,
         type_annotation: None,
         value: Some(value),
-    })
+    }))
 }
 
 #[test]
 fn minimal_program_verifies() {
     let context = Context::create();
     let mut codegen = CodeGen::new(&context, "test");
-    let program = main_program(vec![Stmt::Return(ReturnStmt {
+    let program = main_program(vec![sp(Stmt::Return(ReturnStmt {
         value: Some(Expr::Literal(Literal::Int(0))),
-    })]);
+    }))]);
     codegen.compile(&program).expect("compile should succeed");
     assert!(codegen.verify());
 }
@@ -78,7 +83,7 @@ fn module_function_callable_via_qualified_name() {
 
     // 模块 helpers 定义 fn add(a: i32, b: i32) -> i32
     let helpers = Program {
-        statements: vec![Stmt::Fn(FnStmt {
+        statements: vec![sp(Stmt::Fn(FnStmt {
             name: "add".to_string(),
             params: vec![
                 FnParam { name: "a".to_string(), param_type: Type::I32 },
@@ -86,20 +91,20 @@ fn module_function_callable_via_qualified_name() {
             ],
             return_type: Some(Type::I32),
             body: Block {
-                statements: vec![Stmt::Return(ReturnStmt {
+                statements: vec![sp(Stmt::Return(ReturnStmt {
                     value: Some(Expr::Binary(BinaryExpr {
                         left: Box::new(Expr::Ident("a".to_string())),
                         operator: BinOp::Add,
                         right: Box::new(Expr::Ident("b".to_string())),
                     })),
-                })],
+                }))],
             },
-        })],
+        }))],
     };
     codegen.add_module("helpers", Some(&helpers));
 
     // 主程序 return helpers::add(1, 2) —— 解析为 EnumConstruct 形式
-    let program = main_program(vec![Stmt::Return(ReturnStmt {
+    let program = main_program(vec![sp(Stmt::Return(ReturnStmt {
         value: Some(Expr::EnumConstruct(EnumConstructExpr {
             enum_name: "helpers".to_string(),
             variant: "add".to_string(),
@@ -108,7 +113,7 @@ fn module_function_callable_via_qualified_name() {
                 Expr::Literal(Literal::Int(2)),
             ],
         })),
-    })]);
+    }))]);
     codegen.compile(&program).expect("compile should succeed");
     assert!(codegen.verify());
 }
@@ -117,13 +122,13 @@ fn module_function_callable_via_qualified_name() {
 fn unknown_module_function_reports_error() {
     let context = Context::create();
     let mut codegen = CodeGen::new(&context, "test");
-    let program = main_program(vec![Stmt::Return(ReturnStmt {
+    let program = main_program(vec![sp(Stmt::Return(ReturnStmt {
         value: Some(Expr::EnumConstruct(EnumConstructExpr {
             enum_name: "nomod".to_string(),
             variant: "add".to_string(),
             args: vec![],
         })),
-    })]);
+    }))]);
     let err = codegen.compile(&program).expect_err("unknown module must fail");
     let message = err.message();
     assert!(
@@ -139,13 +144,13 @@ fn unknown_variable_error_suggests_close_name() {
     let mut codegen = CodeGen::new(&context, "test");
     let program = main_program(vec![
         let_stmt("count", Expr::Literal(Literal::Int(1))),
-        Stmt::Return(ReturnStmt {
+        sp(Stmt::Return(ReturnStmt {
             value: Some(Expr::Binary(BinaryExpr {
                 left: Box::new(Expr::Ident("cont".to_string())),
                 operator: BinOp::Add,
                 right: Box::new(Expr::Literal(Literal::Int(1))),
             })),
-        }),
+        })),
     ]);
     let err = codegen.compile(&program).expect_err("typo must fail");
     let message = err.message();

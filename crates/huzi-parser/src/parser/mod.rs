@@ -30,7 +30,15 @@ impl Parser {
         Ok(Program { statements })
     }
 
-    fn parse_statement(&mut self) -> Result<Stmt> {
+    /// 解析一条语句并记录其起始位置(供调试行号使用)。
+    fn parse_statement(&mut self) -> Result<Spanned<Stmt>> {
+        let line = self.current_line();
+        let column = self.current_col();
+        let node = self.parse_statement_kind()?;
+        Ok(Spanned::new(node, line, column))
+    }
+
+    fn parse_statement_kind(&mut self) -> Result<Stmt> {
         if self.check_keyword(&[Token::Let]) {
             self.parse_let_statement()
         } else if self.check_keyword(&[Token::Struct]) {
@@ -124,6 +132,14 @@ impl Parser {
                 | Token::Bang
                 | Token::Minus
         )
+    }
+
+    /// 把单个表达式包成单语句块(if 表达式 / match 手臂的语法糖),
+    /// 语句位置取当前 token,即该表达式的起始位置。
+    fn expr_block(&self, expr: Expr, line: usize, column: usize) -> Block {
+        Block {
+            statements: vec![Spanned::new(Stmt::Expr(ExprStmt { expr }), line, column)],
+        }
     }
 
     fn check(&self, token: &Token) -> bool {
