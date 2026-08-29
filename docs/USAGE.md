@@ -50,12 +50,38 @@ cargo run --release --bin huzc -- --input examples/hello.hz -o out/hello
 | `-o <name>` | 输出文件基础名 (自动添加平台扩展名) | `-o hello` → `hello.exe` (Windows) |
 | `--release` (`-r`) | Release 模式：生成代码前先用 `opt -O2` 优化 LLVM IR，运行速度显著更快；编译过程不打印任何日志（错误仍输出到 stderr）。默认 dev 模式不做 IR 优化并打印编译进度 | `huzc --input main.hz -o main --release` |
 | `--opt-level <0-3>` | LLVM 优化级别,覆盖 `--release` 的默认级别 2;`--opt-level 0` 等价于 dev 模式 | `huzc --input main.hz -o main --opt-level 3` |
+| `--debug` (`-g`) | 调试模式：在可执行文件中嵌入 DWARF 调试信息(编译单元、行号表、变量),可用 GDB/LLDB 断点单步;隐含 `--opt-level 0`(优化会打乱行号对应),链接器自动加调试参数 | `huzc --input main.hz -o main -g` |
 
 ### 输出文件说明
 
 - **Windows**: 输出 `hello.exe`，中间文件 `hello.ll`、`hello.obj`
 - **Linux/macOS**: 输出 `hello`，中间文件 `hello.ll`、`hello.o`
 - 中间文件在编译完成后自动清理
+
+## 调试
+
+`-g`/`--debug` 生成带 DWARF 调试信息的可执行文件(强制 `-O0`):
+
+```bash
+huzc -g -i main.hz -o main
+```
+
+之后即可用 GDB/LLDB 调试,断点、单步、打印变量均按 Huzi 源码行号工作:
+
+```bash
+gdb ./main
+(gdb) break main.hz:10     # 按源码行设置断点
+(gdb) run
+(gdb) print x              # 打印变量(gdb 会显示 let 声明的名字)
+(gdb) next                 # 按语句单步
+```
+
+说明:
+
+- **文件模块**:被 `import` 的 `.hz` 文件的函数同样携带调试信息,按各自文件归属。
+- **复合类型**:结构体/枚举/元组以结构体形式描述;数组在内部按指针传递,gdb 中显示为地址。
+- **Windows + GDB**:GDB 的 COFF 读取器对 lld-link 输出的符号表支持有限,建议配合 `-l mingw` 使用
+  (`huzc -g -l mingw -i main.hz -o main`);LLDB 对两种链接方式都兼容。
 
 ## 语言语法
 

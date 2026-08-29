@@ -41,13 +41,13 @@ fn program_type_definitions(program: &Program) -> (Vec<StructDef>, Vec<EnumDef>)
     )
 }
 
-/// 程序中的全部函数定义 (AST)。
-fn module_fn_statements(program: &Program) -> Vec<FnStmt> {
+/// 程序中的全部函数定义 (AST) 及其定义位置(供调试信息使用)。
+fn module_fn_statements(program: &Program) -> Vec<(FnStmt, Span)> {
     program
         .statements
         .iter()
         .filter_map(|s| match &s.node {
-            Stmt::Fn(f) => Some(f.clone()),
+            Stmt::Fn(f) => Some((f.clone(), s.span)),
             _ => None,
         })
         .collect()
@@ -55,6 +55,7 @@ fn module_fn_statements(program: &Program) -> Vec<FnStmt> {
 
 mod aggregates;
 mod builtins;
+mod debuginfo;
 mod expr;
 mod stmt;
 #[cfg(test)]
@@ -114,6 +115,8 @@ struct EnumInfo<'ctx> {
 pub struct ModuleCode {
     pub name: String,
     pub program: Option<Program>,
+    /// 模块源文件路径(内置模块为 None),用于文件模块的 DIFile。
+    pub path: Option<String>,
 }
 
 pub struct CodeGen<'ctx> {
@@ -139,6 +142,10 @@ pub struct CodeGen<'ctx> {
     modules: Vec<ModuleCode>,
     /// 正在编译的模块名;函数注册/查找按 `模块::名` 限定,主程序为 None。
     current_module: Option<String>,
+    /// DWARF 调试信息状态(`-g` 时由 debuginfo 模块填充)。
+    debug: Option<debuginfo::DebugState<'ctx>>,
+    /// 当前函数的 DISubprogram,作为语句行号与变量的 DI scope。
+    current_subprogram: Option<inkwell::debug_info::DISubprogram<'ctx>>,
 }
 impl<'ctx> CodeGen<'ctx> {
     pub fn new(context: &'ctx Context, name: &str) -> Self {
@@ -157,18 +164,21 @@ impl<'ctx> CodeGen<'ctx> {
             enums: HashMap::new(),
             modules: Vec::new(),
             current_module: None,
+            debug: None,
+            current_subprogram: None,
         }
     }
 
     /// Register an imported module (call before [`CodeGen::compile`]).
     /// 内置模块传 `None`,文件模块传入其解析后的 AST。
-    pub fn add_module(&mut self, name: &str, program: Option<&Program>) {
+    pub fn add_module(&mut self, name: &str, program: Option<&Program>, path: Option<&str>) {
         if self.modules.iter().any(|m| m.name == name) {
             return;
         }
         self.modules.push(ModuleCode {
             name: name.to_string(),
             program: program.cloned(),
+            path: path.map(|p| p.to_string()),
         });
     }
 
@@ -200,26 +210,29 @@ impl<'ctx> CodeGen<'ctx> {
         for m in &modules {
             if let Some(prog) = &m.program {
                 self.current_module = Some(m.name.clone());
-                for fn_stmt in module_fn_statements(prog) {
-                    self.compile_fn(&fn_stmt)?;
+                self.use_debug_file(m.path.as_deref());
+                for (fn_stmt, span) in module_fn_statements(prog) {
+                    self.compile_fn(&fn_stmt, span)?;
                 }
                 self.current_module = None;
             }
         }
+        self.use_debug_file(None);
 
-        for fn_stmt in &fn_stmts {
-            self.compile_fn(fn_stmt)?;
+        for (fn_stmt, span) in &fn_stmts {
+            self.compile_fn(fn_stmt, *span)?;
         }
 
         self.compile_top_level(program, &fn_stmts)?;
 
+        self.finalize_debug_info();
         Ok(())
     }
 
     /// Register all top-level struct/enum definitions before anything else
     /// so function signatures and field types can reference them. Returns
     /// the collected function definitions.
-    fn register_program_types(&mut self, program: &Program) -> Result<Vec<FnStmt>> {
+    fn register_program_types(&mut self, program: &Program) -> Result<Vec<(FnStmt, Span)>> {
         let (struct_defs, enum_defs) = program_type_definitions(program);
         self.register_type_definitions(&struct_defs, &enum_defs)?;
 
@@ -227,7 +240,7 @@ impl<'ctx> CodeGen<'ctx> {
             .statements
             .iter()
             .filter_map(|s| match &s.node {
-                Stmt::Fn(f) => Some(f.clone()),
+                Stmt::Fn(f) => Some((f.clone(), s.span)),
                 _ => None,
             })
             .collect())
@@ -239,8 +252,8 @@ impl<'ctx> CodeGen<'ctx> {
     fn register_module_types(&mut self, program: &Program) -> Result<()> {
         let (struct_defs, enum_defs) = program_type_definitions(program);
         self.register_type_definitions(&struct_defs, &enum_defs)?;
-        for fn_stmt in module_fn_statements(program) {
-            self.compile_fn_signature(&fn_stmt)?;
+        for (fn_stmt, span) in module_fn_statements(program) {
+            self.compile_fn_signature(&fn_stmt, span)?;
         }
         Ok(())
     }
@@ -259,17 +272,17 @@ impl<'ctx> CodeGen<'ctx> {
         Ok(())
     }
 
-    fn declare_fn_signatures(&mut self, fn_stmts: &[FnStmt]) -> Result<()> {
-        for fn_stmt in fn_stmts {
-            self.compile_fn_signature(fn_stmt)?;
+    fn declare_fn_signatures(&mut self, fn_stmts: &[(FnStmt, Span)]) -> Result<()> {
+        for (fn_stmt, span) in fn_stmts {
+            self.compile_fn_signature(fn_stmt, *span)?;
         }
         Ok(())
     }
 
     /// Top-level statements must live in a `main` function; synthesize one
     /// if the program only has top-level code.
-    fn compile_top_level(&mut self, program: &Program, fn_stmts: &[FnStmt]) -> Result<()> {
-        let has_main = fn_stmts.iter().any(|f| f.name == "main");
+    fn compile_top_level(&mut self, program: &Program, fn_stmts: &[(FnStmt, Span)]) -> Result<()> {
+        let has_main = fn_stmts.iter().any(|(f, _)| f.name == "main");
         let top_level: Vec<&Spanned<Stmt>> = program
             .statements
             .iter()
@@ -297,11 +310,21 @@ impl<'ctx> CodeGen<'ctx> {
         }
 
         let main_type = self.context.i32_type().fn_type(&[], false);
+        let line = top_level
+            .first()
+            .map(|s| s.span.line as u32)
+            .unwrap_or(1);
+        let sp = self.create_subprogram("main", line, &[], self.context.i32_type().into());
         let main_fn = self.module.add_function("main", main_type, None);
+        if let Some(sp) = sp {
+            main_fn.set_subprogram(sp);
+        }
         self.functions.insert("main".to_string(), (main_fn, vec![]));
+        self.current_subprogram = main_fn.get_subprogram();
 
         let entry = self.context.append_basic_block(main_fn, "entry");
         self.builder.position_at_end(entry);
+        self.clear_debug_location();
         self.emit_console_utf8_setup();
         self.current_return_type = Some(self.context.i32_type().into());
         self.scopes = vec![HashMap::new()];
@@ -319,7 +342,7 @@ impl<'ctx> CodeGen<'ctx> {
         Ok(())
     }
 
-    fn compile_fn_signature(&mut self, stmt: &FnStmt) -> Result<()> {
+    fn compile_fn_signature(&mut self, stmt: &FnStmt, span: Span) -> Result<()> {
         let qualified_name = self.qualify_name(&stmt.name);
         if self.functions.contains_key(&qualified_name) {
             return Err(HuziError::new_global(format!(
@@ -328,24 +351,26 @@ impl<'ctx> CodeGen<'ctx> {
             )));
         }
 
-        let param_types: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> = stmt
-            .params
-            .iter()
-            .map(|p| self.type_to_llvm(&p.param_type).map(|t| t.into()))
-            .collect::<Result<Vec<_>>>()?;
-
-        let fn_type = if let Some(ret_type) = &stmt.return_type {
-            self.type_to_llvm(ret_type)?.fn_type(&param_types, false)
-        } else {
-            self.context.i32_type().fn_type(&param_types, false)
-        };
-
-        let function = self.module.add_function(&qualified_name, fn_type, None);
         let param_llvm_types: Vec<inkwell::types::BasicTypeEnum<'ctx>> = stmt
             .params
             .iter()
             .map(|p| self.type_to_llvm(&p.param_type))
             .collect::<Result<Vec<_>>>()?;
+        let param_types: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
+            param_llvm_types.iter().map(|t| (*t).into()).collect();
+
+        let return_type = match &stmt.return_type {
+            Some(t) => self.type_to_llvm(t)?,
+            None => self.context.i32_type().into(),
+        };
+        let fn_type = return_type.fn_type(&param_types, false);
+
+        let sp =
+            self.create_subprogram(&qualified_name, span.line as u32, &param_llvm_types, return_type);
+        let function = self.module.add_function(&qualified_name, fn_type, None);
+        if let Some(sp) = sp {
+            function.set_subprogram(sp);
+        }
         self.functions
             .insert(qualified_name, (function, param_llvm_types));
 

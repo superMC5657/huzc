@@ -7,16 +7,17 @@ use huzi_error::{HuziError, Result};
 
 impl<'ctx> CodeGen<'ctx> {
     pub(super) fn compile_stmt(&mut self, stmt: &Stmt, span: Span) -> Result<()> {
-        let _ = span; // 调试信息(提交 2)在此按语句位置设置 debug location
+        // 之后生成的指令都归属该语句所在行(未启用调试时为 no-op)。
+        self.set_current_debug_span(span);
         match stmt {
-            Stmt::Let(let_stmt) => self.compile_let(let_stmt),
+            Stmt::Let(let_stmt) => self.compile_let(let_stmt, span),
             Stmt::Struct(_) => Err(HuziError::new_global(
                 "Struct definitions are only allowed at the top level",
             )),
             Stmt::Enum(_) => Err(HuziError::new_global(
                 "Enum definitions are only allowed at the top level",
             )),
-            Stmt::Fn(fn_stmt) => self.compile_fn(fn_stmt),
+            Stmt::Fn(fn_stmt) => self.compile_fn(fn_stmt, span),
             // import 在加载阶段已处理,编译期不再出现
             Stmt::Import(_) => Ok(()),
             Stmt::Expr(expr_stmt) => {
@@ -28,24 +29,24 @@ impl<'ctx> CodeGen<'ctx> {
             Stmt::Continue => self.compile_continue(),
             Stmt::Block(block) => self.compile_block(block),
             Stmt::If(if_stmt) => self.compile_if(if_stmt, span),
-            Stmt::For(for_stmt) => self.compile_for(for_stmt),
+            Stmt::For(for_stmt) => self.compile_for(for_stmt, span),
             Stmt::While(while_stmt) => self.compile_while(while_stmt),
         }
     }
 
-    pub(super) fn compile_let(&mut self, stmt: &LetStmt) -> Result<()> {
+    pub(super) fn compile_let(&mut self, stmt: &LetStmt, span: Span) -> Result<()> {
         match &stmt.value {
-            Some(Expr::ArrayLiteral(elements)) => self.compile_let_array(stmt, elements),
-            Some(Expr::TupleLiteral(elements)) => self.compile_let_tuple(stmt, elements),
-            Some(value_expr) => self.compile_let_with_value(stmt, value_expr),
-            None => self.compile_let_uninitialized(stmt),
+            Some(Expr::ArrayLiteral(elements)) => self.compile_let_array(stmt, elements, span),
+            Some(Expr::TupleLiteral(elements)) => self.compile_let_tuple(stmt, elements, span),
+            Some(value_expr) => self.compile_let_with_value(stmt, value_expr, span),
+            None => self.compile_let_uninitialized(stmt, span),
         }
     }
 
     /// `let name = [a, b, c]` — build a fixed-size array and store its
     /// address in a pointer slot so loading the variable yields the array
     /// address.
-    fn compile_let_array(&mut self, stmt: &LetStmt, elements: &[Expr]) -> Result<()> {
+    fn compile_let_array(&mut self, stmt: &LetStmt, elements: &[Expr], span: Span) -> Result<()> {
         if elements.is_empty() {
             return Err(HuziError::new_global("Empty array literal not supported"));
         }
@@ -83,11 +84,12 @@ impl<'ctx> CodeGen<'ctx> {
                 mutable: stmt.mutable,
             },
         );
+        self.declare_local(&stmt.name, slot_ptr, ptr_ty.into(), span);
         Ok(())
     }
 
     /// `let name[: T] = value`.
-    fn compile_let_with_value(&mut self, stmt: &LetStmt, value_expr: &Expr) -> Result<()> {
+    fn compile_let_with_value(&mut self, stmt: &LetStmt, value_expr: &Expr, span: Span) -> Result<()> {
         let mut value = self.compile_expr(value_expr)?;
 
         let var_type = match &stmt.type_annotation {
@@ -119,11 +121,12 @@ impl<'ctx> CodeGen<'ctx> {
                 mutable: stmt.mutable,
             },
         );
+        self.declare_local(&stmt.name, alloca, var_type, span);
         Ok(())
     }
 
     /// `let name: T;` — declaration without initializer, zero-initialized.
-    fn compile_let_uninitialized(&mut self, stmt: &LetStmt) -> Result<()> {
+    fn compile_let_uninitialized(&mut self, stmt: &LetStmt, span: Span) -> Result<()> {
         // Requires a type annotation.
         let ty = match &stmt.type_annotation {
             Some(t) => self.type_to_llvm(t)?,
@@ -153,10 +156,11 @@ impl<'ctx> CodeGen<'ctx> {
                 mutable: stmt.mutable,
             },
         );
+        self.declare_local(&stmt.name, alloca, ty, span);
         Ok(())
     }
 
-    pub(super) fn compile_fn(&mut self, stmt: &FnStmt) -> Result<()> {
+    pub(super) fn compile_fn(&mut self, stmt: &FnStmt, span: Span) -> Result<()> {
         let (function, _) = self
             .functions
             .get(&self.qualify_name(&stmt.name))
@@ -165,6 +169,8 @@ impl<'ctx> CodeGen<'ctx> {
 
         let entry = self.context.append_basic_block(function, "entry");
         self.builder.position_at_end(entry);
+        self.current_subprogram = function.get_subprogram();
+        self.clear_debug_location();
 
         // The program entry point sets up UTF-8 console output first.
         if stmt.name == "main" {
@@ -184,6 +190,7 @@ impl<'ctx> CodeGen<'ctx> {
 
             let alloca = self.build_alloca(arg_type, &param.name)?;
             self.builder.build_store(alloca, arg).unwrap();
+            self.declare_param(&param.name, alloca, arg_type, i as u32 + 1, span.line as u32);
 
             // Arrays decay to pointers; remember the element type for indexing.
             let elem = match &param.param_type {
@@ -354,7 +361,7 @@ impl<'ctx> CodeGen<'ctx> {
         Ok(())
     }
 
-    pub(super) fn compile_for(&mut self, stmt: &ForStmt) -> Result<()> {
+    pub(super) fn compile_for(&mut self, stmt: &ForStmt, span: Span) -> Result<()> {
         let i_type = self.context.i32_type();
         let (start, end) = self.compile_for_bounds(stmt)?;
 
@@ -369,6 +376,7 @@ impl<'ctx> CodeGen<'ctx> {
         // Allocate and initialize the loop variable.
         let i_alloca = self.build_alloca(i_type.into(), &stmt.var_name)?;
         self.builder.build_store(i_alloca, start).unwrap();
+        self.declare_local(&stmt.var_name, i_alloca, i_type.into(), span);
 
         self.builder
             .build_unconditional_branch(loop_block)

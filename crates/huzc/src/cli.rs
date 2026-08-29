@@ -59,11 +59,21 @@ pub struct Args {
     /// 0 keeps the IR unoptimized, 2 matches `--release`.
     #[arg(long, value_parser = clap::value_parser!(u8).range(0..4))]
     pub opt_level: Option<u8>,
+
+    /// Debug mode: embed DWARF debug info (compile units, line tables,
+    /// variables) so the executable can be debugged with GDB/LLDB.
+    /// Implies opt level 0, since optimization scrambles line attribution.
+    #[arg(short = 'g', long)]
+    pub debug: bool,
 }
 
 impl Args {
     /// Effective LLVM opt level: explicit `--opt-level` wins over `--release`.
+    /// `-g` forces level 0 to keep line info accurate.
     pub fn effective_opt_level(&self) -> u8 {
+        if self.debug {
+            return 0;
+        }
         self.opt_level.unwrap_or(if self.release { 2 } else { 0 })
     }
 }

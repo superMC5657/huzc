@@ -20,26 +20,32 @@ pub fn run_command(cmd: &str, args: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
-pub fn link(paths: &OutputPaths, linker: LinkerKind, quiet: bool) {
+pub fn link(paths: &OutputPaths, linker: LinkerKind, debug: bool, quiet: bool) {
     match linker {
-        LinkerKind::Msvc => link_msvc(paths, quiet),
-        LinkerKind::Clang => link_clang(paths, quiet),
-        LinkerKind::Mingw => link_mingw(paths, quiet),
+        LinkerKind::Msvc => link_msvc(paths, debug, quiet),
+        LinkerKind::Clang => link_clang(paths, debug, quiet),
+        LinkerKind::Mingw => link_mingw(paths, debug, quiet),
     }
 }
 
 /// Link with lld-link. It auto-detects the MSVC/Windows SDK lib directories,
 /// so no /LIBPATH is needed.
-fn link_msvc(paths: &OutputPaths, quiet: bool) {
-    let lld_args: Vec<String> = vec![
+fn link_msvc(paths: &OutputPaths, debug: bool, quiet: bool) {
+    let mut lld_args: Vec<String> = vec![
         format!("/OUT:{}", paths.exe_path.to_str().unwrap()),
         "/ENTRY:main".to_string(),
+    ];
+    if debug {
+        // Keep the debug sections/DWARF info in the executable.
+        lld_args.push("/DEBUG".to_string());
+    }
+    lld_args.extend([
         "/DEFAULTLIB:ucrt.lib".to_string(),
         "/DEFAULTLIB:msvcrt.lib".to_string(),
         "/DEFAULTLIB:legacy_stdio_definitions.lib".to_string(),
         "/DEFAULTLIB:kernel32.lib".to_string(),
         paths.obj_path.to_str().unwrap().to_string(),
-    ];
+    ]);
     let lld_args_ref: Vec<&str> = lld_args.iter().map(|s| s.as_str()).collect();
     if !quiet {
         println!("  lld-link args: {}", lld_args_ref.join(" "));
@@ -49,8 +55,12 @@ fn link_msvc(paths: &OutputPaths, quiet: bool) {
 }
 
 /// Link with the clang driver.
-fn link_clang(paths: &OutputPaths, quiet: bool) {
-    let clang_args = clang_link_args(Some(clang_target().as_str()), &paths.exe_path, &paths.obj_path);
+fn link_clang(paths: &OutputPaths, debug: bool, quiet: bool) {
+    let mut clang_args =
+        clang_link_args(Some(clang_target().as_str()), &paths.exe_path, &paths.obj_path);
+    if debug {
+        clang_args.splice(2..2, ["-g".to_string()]);
+    }
     let clang_args_ref: Vec<&str> = clang_args.iter().map(|s| s.as_str()).collect();
     if !quiet {
         println!("  clang args: {}", clang_args_ref.join(" "));
@@ -61,12 +71,15 @@ fn link_clang(paths: &OutputPaths, quiet: bool) {
 
 /// Link with MinGW's gcc driver. It provides the mingw-w64 startup files and
 /// links against msvcrt by default, so no extra libs are needed.
-fn link_mingw(paths: &OutputPaths, quiet: bool) {
+fn link_mingw(paths: &OutputPaths, debug: bool, quiet: bool) {
     let mut mingw_args: Vec<String> = vec![
         "-o".to_string(),
         paths.exe_path.to_str().unwrap().to_string(),
-        paths.obj_path.to_str().unwrap().to_string(),
     ];
+    if debug {
+        mingw_args.push("-g".to_string());
+    }
+    mingw_args.push(paths.obj_path.to_str().unwrap().to_string());
     if cfg!(target_os = "linux") {
         // sqrt, pow, sin, ... are in libm on glibc
         mingw_args.push("-lm".to_string());

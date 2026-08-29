@@ -9,16 +9,26 @@ use huzi_parser::Parser as HuziParser;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// 一个已加载的模块。
+pub struct LoadedModule {
+    /// 符号绑定名(点分 import 名的末段)。
+    pub name: String,
+    /// 解析后的 AST;内置模块(如 math)为 None。
+    pub program: Option<Program>,
+    /// 模块源文件路径;内置模块为 None,供调试信息生成 DIFile。
+    pub path: Option<PathBuf>,
+}
+
 /// 全加载过程共享的状态:已解析模块(防循环导入)与加载结果。
 /// `loaded` 必须跨递归共享,否则循环导入会无限递归。
 struct LoadState {
     loaded: HashMap<String, PathBuf>,
-    modules: Vec<(String, Option<Program>)>,
+    modules: Vec<LoadedModule>,
 }
 
 /// 加载主程序的全部 import,并把 Import 语句从程序中移除。
-/// 返回 (模块名, 模块 AST) 列表;内置模块的 AST 为 None。
-pub fn load_modules(program: &mut Program, base_dir: &Path) -> Vec<(String, Option<Program>)> {
+/// 返回模块列表;内置模块的 AST 与路径均为 None。
+pub fn load_modules(program: &mut Program, base_dir: &Path) -> Vec<LoadedModule> {
     let import_names = extract_imports(program);
 
     let mut state = LoadState {
@@ -52,13 +62,17 @@ fn module_bind_name(import_name: &str) -> &str {
 /// 解析并加载单个模块(递归处理其自身依赖)。
 fn load_module(import_name: &str, base_dir: &Path, state: &mut LoadState) {
     let name = module_bind_name(import_name).to_string();
-    if state.modules.iter().any(|(n, _)| *n == name) {
+    if state.modules.iter().any(|m| m.name == name) {
         return;
     }
 
     // 内置模块:不解析文件,由 codegen 走 builtin 调度。
     if BUILTIN_MODULES.contains(&name.as_str()) {
-        state.modules.push((name, None));
+        state.modules.push(LoadedModule {
+            name,
+            program: None,
+            path: None,
+        });
         return;
     }
 
@@ -94,7 +108,11 @@ fn load_module(import_name: &str, base_dir: &Path, state: &mut LoadState) {
     for nested_name in nested {
         load_module(&nested_name, &module_dir, state);
     }
-    state.modules.push((name, Some(module_program)));
+    state.modules.push(LoadedModule {
+        name,
+        program: Some(module_program),
+        path: Some(path),
+    });
 }
 
 /// 模块名 -> 文件:点分段转子路径加 `.hz`,先找导入文件同目录,再找当前工作目录。

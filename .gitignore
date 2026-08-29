@@ -15,8 +15,6 @@
 out/
 *.out
 # ...but example snapshots are tracked
-!test/snapshots/
-!test/snapshots/*.out
 *.exe
 *.ll
 *.bc

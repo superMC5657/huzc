@@ -42,8 +42,25 @@ fn main() {
     }
     let context = Context::create();
     let mut codegen = CodeGen::new(&context, "huzi");
-    for (name, module_program) in &imported {
-        codegen.add_module(name, module_program.as_ref());
+    if args.debug {
+        // 调试模式:以规范化的绝对路径作为编译单元源文件。
+        // 去掉 canonicalize 产生的 `\\?\` 前缀,否则 gdb/lldb 按此路径
+        // 找不到源文件。
+        let source_path = fs::canonicalize(&args.input)
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_else(|_| args.input.clone());
+        let source_path = source_path
+            .strip_prefix(r"\\?\")
+            .map(|s| s.to_string())
+            .unwrap_or(source_path);
+        codegen.enable_debug_info(&source_path);
+    }
+    for module in &imported {
+        let module_path = module.path.as_deref().map(|p| p.to_string_lossy().into_owned());
+        let module_path = module_path
+            .as_deref()
+            .map(|p| p.strip_prefix(r"\\?\").map(|s| s.to_string()).unwrap_or_else(|| p.to_string()));
+        codegen.add_module(&module.name, module.program.as_ref(), module_path.as_deref());
     }
     if let Err(e) = codegen.compile(&program) {
         die(format!("Compile error: {}", e));
@@ -71,11 +88,11 @@ fn main() {
     if !quiet {
         println!("[5/5] Generating executable...");
     }
-    compile_ir_to_object(&paths);
+    compile_ir_to_object(&paths, args.debug);
     if !quiet {
         println!("  Linking to executable...");
     }
-    link(&paths, args.linker, quiet);
+    link(&paths, args.linker, args.debug, quiet);
 
     // Cleanup intermediate files
     let _ = fs::remove_file(&paths.ll_path);
@@ -117,15 +134,20 @@ fn write_ir(codegen: &CodeGen, ll_path: &Path) {
     }
 }
 
-/// Compile the LLVM IR to a platform object file with llc.
-fn compile_ir_to_object(paths: &OutputPaths) {
-    run_command("llc", &[
+/// Compile the LLVM IR to a platform object file with llc. In debug mode,
+/// tune the debugger representation to DWARF (gdb/lldb) instead of the
+/// platform default (CodeView on windows-msvc targets).
+fn compile_ir_to_object(paths: &OutputPaths, debug: bool) {
+    let mut llc_args: Vec<&str> = vec![
         "--relocation-model=pic",
         "--filetype=obj",
-        "-o", paths.obj_path.to_str().unwrap(),
-        paths.ll_path.to_str().unwrap(),
-    ])
-    .unwrap_or_else(|e| die(e));
+    ];
+    if debug {
+        llc_args.push("-debugger-tune=gdb");
+    }
+    llc_args.extend(["-o", paths.obj_path.to_str().unwrap()]);
+    llc_args.push(paths.ll_path.to_str().unwrap());
+    run_command("llc", &llc_args).unwrap_or_else(|e| die(e));
 }
 
 /// Optimize the LLVM IR in place with `opt -O<level>` (only called when

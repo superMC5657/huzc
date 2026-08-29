@@ -36,6 +36,7 @@ impl<'ctx> CodeGen<'ctx> {
         &mut self,
         stmt: &LetStmt,
         elements: &[Expr],
+        span: Span,
     ) -> Result<()> {
         let annotated = match &stmt.type_annotation {
             Some(Type::Tuple(elems)) => Some(elems.clone()),
@@ -83,6 +84,7 @@ impl<'ctx> CodeGen<'ctx> {
                 mutable: stmt.mutable,
             },
         );
+        self.declare_local(&stmt.name, tuple_ptr, tuple_ty.into(), span);
         Ok(())
     }
 

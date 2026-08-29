@@ -76,3 +76,12 @@ fn parse_error_reports_real_position() {
         .expect_err("`;` is not a valid expression");
     assert_eq!((err.line(), err.column()), (1, 9));
 }
+
+#[test]
+fn statements_carry_source_span() {
+    let program = parse("let x = 1\nlet y = 2");
+    assert_eq!(program.statements[0].span.line, 1);
+    assert_eq!(program.statements[0].span.column, 1);
+    assert_eq!(program.statements[1].span.line, 2);
+    assert_eq!(program.statements[1].span.column, 1);
+}

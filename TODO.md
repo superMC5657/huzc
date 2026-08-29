@@ -118,9 +118,9 @@ huzc/
 - [x] 建议修复方案 (Levenshtein 距离 "did you mean";codegen 未定义变量/函数给出最近候选名)
 
 #### 13. 调试支持
-- [ ] DWARF 调试信息生成
-- [ ] 行号信息
-- [ ] 与 LLDB/GDB 集成
+- [x] DWARF 调试信息生成 (编译单元/子程序/结构体-枚举-元组类型描述,见 codegen/debuginfo.rs)
+- [x] 行号信息 (语句级 DILocation + .debug_line 行号表;AST 语句携带 Span)
+- [x] 与 LLDB/GDB 集成 (`-g` 生成 DWARF;gdb 断点/print/单步实测通过,见 docs/USAGE.md「调试」)
 
 #### 14. 测试
 - [x] 单元测试 (各 crate 共 22 个:lexer 分词/span、parser 优先级/结构、codegen 类型映射/verify、error 建议/渲染)
@@ -152,7 +152,7 @@ huzc/
 4. **类型验证** → ✅ 已完成 (基础版)
 5. **结构体/枚举** → ✅ 已完成 (结构体 2026-08-29，枚举+match 2026-08-29)
 6. **元组** → ✅ 已完成 (2026-08-29)
-7. **错误改进/调试** → ✅ 错误改进已完成 (2026-08-30:高亮 + 修复建议)；调试支持待开发
+7. **错误改进/调试** → ✅ 已完成 (2026-08-30:高亮 + 修复建议;2026-08-30:DWARF 调试支持)
 8. **模块系统** → ✅ 已完成 (2026-08-30:import/文件模块/内置 math 模块,见 examples/22_modules.hz)
 
 ---
@@ -163,6 +163,16 @@ huzc/
 - 技术文档：`docs/TECHNICAL.md`
 
 ---
+
+## 2026-08-30 更新(二)
+
+完成**调试支持**(P4 第 13 项全部三个子项,两次提交):
+
+- **AST 携带位置**(纯重构提交):huzi-ast 新增 `Span`/`Spanned<T>`,Program/Block 语句携带行列号;parser 在语句起点记录位置,合成语句(if 表达式/match 手臂/elif 折叠)继承对应关键字位置;codegen `compile_stmt` 改为 `(&Stmt, Span)` 签名。行为零变化(快照逐字节一致)。
+- **DWARF 生成**(功能提交):`codegen/debuginfo.rs` —— `-g` 时创建 DICompileUnit,每个函数挂 DISubprogram,语句按 Span 设置 DILocation,参数与 let 变量挂 `llvm.dbg.declare`(含结构体/数据枚举/元组的 DICompositeType,成员偏移按 LLVM 布局计算);文件模块按各自路径生成 DIFile。
+- **CLI/流水线**:`-g/--debug` 选项,隐含 opt-level 0;llc 加 `-debugger-tune=gdb`;链接器加 `/DEBUG`(msvc)或 `-g`(clang/mingw)。
+- **关键修复**:模块须带 `Debug Info Version` 标志,否则 llc 报 "invalid version (0)" 丢弃全部调试信息;`fs::canonicalize` 的 `\\?\` 前缀须剥除,否则 gdb 找不到源文件。
+- **验证**:`llvm-dwarfdump` 确认编译单元/子程序/变量/行号表;GDB 14.2 实测断点按源码行命中、`print x` 得到正确值、源码行显示正常(Windows 建议 `-l mingw` 配合 gdb)。单元测试 +4(parser span、codegen DI 元数据/无 DI 干净输出);快照输出不变;另补齐了此前未纳入版本管理的 test/snapshots/*.out(21 个)。
 
 ## 2026-08-30 更新
 
