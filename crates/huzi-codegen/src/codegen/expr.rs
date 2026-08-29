@@ -364,9 +364,12 @@ impl<'ctx> CodeGen<'ctx> {
             _ => {}
         }
 
+        // 模块内调用同模块函数时按 `模块::名` 查找;主程序中限定名
+        // (`mod::fn`,由模块调度传入)本身已带前缀,qualify 原样返回。
+        let lookup_key = self.qualify_name(&callee_name);
         let (function, param_types) = self
             .functions
-            .get(&callee_name)
+            .get(&lookup_key)
             .cloned()
             .ok_or_else(|| self.unknown_function_error(&callee_name))?;
 

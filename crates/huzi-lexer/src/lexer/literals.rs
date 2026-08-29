@@ -29,6 +29,7 @@ impl Lexer {
             "continue" => Token::Continue,
             "true" => Token::True,
             "false" => Token::False,
+            "import" => Token::Import,
             _ => Token::Ident(ident),
         };
 

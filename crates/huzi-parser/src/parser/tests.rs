@@ -58,6 +58,15 @@ fn if_elif_else_structure() {
 }
 
 #[test]
+fn import_parses_dotted_name() {
+    let program = parse("import mods.helpers");
+    let Stmt::Import(imp) = &program.statements[0] else {
+        panic!("expected an import statement");
+    };
+    assert_eq!(imp.name, "mods.helpers");
+}
+
+#[test]
 fn parse_error_reports_real_position() {
     let tokens = Lexer::new("let x = ;".to_string())
         .tokenize()

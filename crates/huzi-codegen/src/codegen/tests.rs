@@ -72,6 +72,68 @@ fn tuple_type_maps_to_struct() {
 }
 
 #[test]
+fn module_function_callable_via_qualified_name() {
+    let context = Context::create();
+    let mut codegen = CodeGen::new(&context, "test");
+
+    // 模块 helpers 定义 fn add(a: i32, b: i32) -> i32
+    let helpers = Program {
+        statements: vec![Stmt::Fn(FnStmt {
+            name: "add".to_string(),
+            params: vec![
+                FnParam { name: "a".to_string(), param_type: Type::I32 },
+                FnParam { name: "b".to_string(), param_type: Type::I32 },
+            ],
+            return_type: Some(Type::I32),
+            body: Block {
+                statements: vec![Stmt::Return(ReturnStmt {
+                    value: Some(Expr::Binary(BinaryExpr {
+                        left: Box::new(Expr::Ident("a".to_string())),
+                        operator: BinOp::Add,
+                        right: Box::new(Expr::Ident("b".to_string())),
+                    })),
+                })],
+            },
+        })],
+    };
+    codegen.add_module("helpers", Some(&helpers));
+
+    // 主程序 return helpers::add(1, 2) —— 解析为 EnumConstruct 形式
+    let program = main_program(vec![Stmt::Return(ReturnStmt {
+        value: Some(Expr::EnumConstruct(EnumConstructExpr {
+            enum_name: "helpers".to_string(),
+            variant: "add".to_string(),
+            args: vec![
+                Expr::Literal(Literal::Int(1)),
+                Expr::Literal(Literal::Int(2)),
+            ],
+        })),
+    })]);
+    codegen.compile(&program).expect("compile should succeed");
+    assert!(codegen.verify());
+}
+
+#[test]
+fn unknown_module_function_reports_error() {
+    let context = Context::create();
+    let mut codegen = CodeGen::new(&context, "test");
+    let program = main_program(vec![Stmt::Return(ReturnStmt {
+        value: Some(Expr::EnumConstruct(EnumConstructExpr {
+            enum_name: "nomod".to_string(),
+            variant: "add".to_string(),
+            args: vec![],
+        })),
+    })]);
+    let err = codegen.compile(&program).expect_err("unknown module must fail");
+    let message = err.message();
+    assert!(
+        message.contains("Unknown enum: nomod"),
+        "got: {}",
+        message
+    );
+}
+
+#[test]
 fn unknown_variable_error_suggests_close_name() {
     let context = Context::create();
     let mut codegen = CodeGen::new(&context, "test");

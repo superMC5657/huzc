@@ -1,5 +1,6 @@
 mod cli;
 mod linker;
+mod modules;
 mod paths;
 
 use clap::Parser;
@@ -26,7 +27,14 @@ fn main() {
     let quiet = args.release;
 
     let source = read_source(&args.input);
-    let program = parse_source(&source, quiet);
+    let mut program = parse_source(&source, quiet);
+
+    // 解析 import:内置模块直接注册,文件模块递归加载(去重 + 防循环)。
+    let base_dir = Path::new(&args.input)
+        .parent()
+        .unwrap_or(Path::new("."))
+        .to_path_buf();
+    let imported = modules::load_modules(&mut program, &base_dir);
 
     // [3/5] Compiling
     if !quiet {
@@ -34,6 +42,9 @@ fn main() {
     }
     let context = Context::create();
     let mut codegen = CodeGen::new(&context, "huzi");
+    for (name, module_program) in &imported {
+        codegen.add_module(name, module_program.as_ref());
+    }
     if let Err(e) = codegen.compile(&program) {
         die(format!("Compile error: {}", e));
     }

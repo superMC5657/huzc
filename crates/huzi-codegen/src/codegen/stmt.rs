@@ -16,6 +16,8 @@ impl<'ctx> CodeGen<'ctx> {
                 "Enum definitions are only allowed at the top level",
             )),
             Stmt::Fn(fn_stmt) => self.compile_fn(fn_stmt),
+            // import 在加载阶段已处理,编译期不再出现
+            Stmt::Import(_) => Ok(()),
             Stmt::Expr(expr_stmt) => {
                 self.compile_expr(&expr_stmt.expr)?;
                 Ok(())
@@ -156,7 +158,7 @@ impl<'ctx> CodeGen<'ctx> {
     pub(super) fn compile_fn(&mut self, stmt: &FnStmt) -> Result<()> {
         let (function, _) = self
             .functions
-            .get(&stmt.name)
+            .get(&self.qualify_name(&stmt.name))
             .cloned()
             .ok_or_else(|| HuziError::new_global(format!("Unknown function: {}", stmt.name)))?;
 

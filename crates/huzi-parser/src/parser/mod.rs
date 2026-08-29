@@ -39,6 +39,8 @@ impl Parser {
             self.parse_enum_statement()
         } else if self.check_keyword(&[Token::Fn]) {
             self.parse_fn_statement()
+        } else if self.check_keyword(&[Token::Import]) {
+            self.parse_import_statement()
         } else if self.check_keyword(&[Token::Return]) {
             self.parse_return_statement()
         } else if self.check_keyword(&[Token::Break]) {

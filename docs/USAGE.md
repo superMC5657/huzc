@@ -49,6 +49,7 @@ cargo run --release --bin huzc -- --input examples/hello.hz -o out/hello
 | `--input <file>` | 输入的 .hz 源文件 | `--input hello.hz` |
 | `-o <name>` | 输出文件基础名 (自动添加平台扩展名) | `-o hello` → `hello.exe` (Windows) |
 | `--release` (`-r`) | Release 模式：生成代码前先用 `opt -O2` 优化 LLVM IR，运行速度显著更快；编译过程不打印任何日志（错误仍输出到 stderr）。默认 dev 模式不做 IR 优化并打印编译进度 | `huzc --input main.hz -o main --release` |
+| `--opt-level <0-3>` | LLVM 优化级别,覆盖 `--release` 的默认级别 2;`--opt-level 0` 等价于 dev 模式 | `huzc --input main.hz -o main --opt-level 3` |
 
 ### 输出文件说明
 
@@ -390,6 +391,28 @@ fn main() -> i32 {
 | `sin(x)` | 正弦 | `sin(0)` → 0.0 |
 | `cos(x)` | 余弦 | `cos(0)` → 1.0 |
 
+## 模块系统
+
+### import 语句
+
+```huzi
+import math              # 内置模块
+import mods.helpers      # 文件模块:解析为 mods/helpers.hz
+```
+
+- **文件模块**:相对导入文件所在目录查找 `<路径>.hz`(其次当前工作目录);点分名对应子路径。
+- 模块文件只允许 `fn`/`struct`/`enum` 定义与 `import`,不允许顶层级语句。
+- 导入后通过**限定名**使用:`helpers::add(1, 2)`、`math::sqrt(4.0)`;文件模块的
+  `struct`/`enum` 注册为全局名,直接按原名使用。
+- 同一模块只编译一次(按解析路径去重),循环导入会在首次访问处截断。
+- 模块内函数可调用同模块其它函数与内置函数,不能调用主程序里的函数。
+
+### 内置模块
+
+| 模块 | 说明 |
+|------|------|
+| `math` | 数学函数的限定形式:`math::sqrt(x)`、`math::pow(x, n)`、`math::sin(x)` 等,与内置同名函数等价 |
+
 ## 关键字
 
 | 关键字 | 说明 |
@@ -403,6 +426,7 @@ fn main() -> i32 {
 | `for` | 循环 |
 | `while` | 条件循环 |
 | `return` | 返回值 |
+| `import` | 导入模块 |
 | `in` | 循环范围 |
 
 ## 编译流程

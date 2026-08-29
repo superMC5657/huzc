@@ -90,9 +90,9 @@ huzc/
 - [x] 变体引用 `Color::Red` / 构造 `Result::Ok(42)`（`::` 路径语法，见 examples/enums.hz）
 
 #### 9. 模块系统
-- [ ] import 语句
-- [ ] 标准库模块
-- [ ] 文件模块
+- [x] import 语句 (`import math` / `import mods.helpers`,限定调用 `模块::函数`)
+- [x] 标准库模块 (内置模块 `math`,数学函数限定形式)
+- [x] 文件模块 (相对导入文件目录/工作目录解析,点分名对应子路径,按路径去重、循环导入截断)
 
 ---
 
@@ -153,6 +153,7 @@ huzc/
 5. **结构体/枚举** → ✅ 已完成 (结构体 2026-08-29，枚举+match 2026-08-29)
 6. **元组** → ✅ 已完成 (2026-08-29)
 7. **错误改进/调试** → ✅ 错误改进已完成 (2026-08-30:高亮 + 修复建议)；调试支持待开发
+8. **模块系统** → ✅ 已完成 (2026-08-30:import/文件模块/内置 math 模块,见 examples/22_modules.hz)
 
 ---
 
@@ -171,6 +172,13 @@ huzc/
 - **错误体验**:错误报告带源码行摘录 + `^` 列指示(huzi-error render);未定义变量/函数附 Levenshtein "did you mean" 建议(huzi-error suggest)。
 - **单元测试**:lexer/parser/codegen/error 共 22 个 `#[cfg(test)]` 测试。
 - **快照回归**:test.sh 与 test/snapshots/ 输出逐字节比对(比对前剥离 `\r`,跨平台一致),`UPDATE=1` 重建快照。
+
+同日完成**模块系统**(P2 最后一个语言特性缺口):
+
+- `import` 语句:内置模块(`math`)与文件模块;点分名(`mods.helpers`)对应子路径,符号绑定为末段名。
+- 文件模块只允许 fn/struct/enum/import,限定调用 `模块::函数`(`::` 复用枚举构造语法,codegen 按已注册模块调度);模块 struct/enum 注册为全局名。
+- 加载器支持路径去重、循环导入截断、同名多文件报错(入口 crates/huzc/src/modules.rs)。
+- 示例 examples/22_modules.hz + examples/mods/helpers.hz,文档见 docs/USAGE.md「模块系统」。
 
 ## 2026-08-29 修复记录
 

@@ -9,6 +9,50 @@ use inkwell::{
     types::BasicType,
     values::{FunctionValue, PointerValue},
 };
+
+/// 程序中的全部结构体定义 (AST)。
+fn program_struct_definitions(program: &Program) -> Vec<StructDef> {
+    program
+        .statements
+        .iter()
+        .filter_map(|s| match s {
+            Stmt::Struct(d) => Some(d.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+/// 程序中的全部枚举定义 (AST)。
+fn program_enum_definitions(program: &Program) -> Vec<EnumDef> {
+    program
+        .statements
+        .iter()
+        .filter_map(|s| match s {
+            Stmt::Enum(d) => Some(d.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn program_type_definitions(program: &Program) -> (Vec<StructDef>, Vec<EnumDef>) {
+    (
+        program_struct_definitions(program),
+        program_enum_definitions(program),
+    )
+}
+
+/// 程序中的全部函数定义 (AST)。
+fn module_fn_statements(program: &Program) -> Vec<FnStmt> {
+    program
+        .statements
+        .iter()
+        .filter_map(|s| match s {
+            Stmt::Fn(f) => Some(f.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
 mod aggregates;
 mod builtins;
 mod expr;
@@ -64,6 +108,14 @@ struct EnumInfo<'ctx> {
     payload_union: Option<inkwell::types::StructType<'ctx>>,
 }
 
+/// 一个已导入的模块。内置模块(如 math)没有源码,其符号在
+/// 编译期由 builtin 调度处理;文件模块携带解析后的 AST。
+#[derive(Clone)]
+pub struct ModuleCode {
+    pub name: String,
+    pub program: Option<Program>,
+}
+
 pub struct CodeGen<'ctx> {
     context: &'ctx Context,
     module: Module<'ctx>,
@@ -83,6 +135,10 @@ pub struct CodeGen<'ctx> {
     >,
     /// Registered user-defined enums: name -> layout info.
     enums: HashMap<String, EnumInfo<'ctx>>,
+    /// Imported modules, registered via [`CodeGen::add_module`] before compile.
+    modules: Vec<ModuleCode>,
+    /// 正在编译的模块名;函数注册/查找按 `模块::名` 限定,主程序为 None。
+    current_module: Option<String>,
 }
 impl<'ctx> CodeGen<'ctx> {
     pub fn new(context: &'ctx Context, name: &str) -> Self {
@@ -99,14 +155,57 @@ impl<'ctx> CodeGen<'ctx> {
             loop_stack: Vec::new(),
             structs: HashMap::new(),
             enums: HashMap::new(),
+            modules: Vec::new(),
+            current_module: None,
+        }
+    }
+
+    /// Register an imported module (call before [`CodeGen::compile`]).
+    /// 内置模块传 `None`,文件模块传入其解析后的 AST。
+    pub fn add_module(&mut self, name: &str, program: Option<&Program>) {
+        if self.modules.iter().any(|m| m.name == name) {
+            return;
+        }
+        self.modules.push(ModuleCode {
+            name: name.to_string(),
+            program: program.cloned(),
+        });
+    }
+
+    /// 编译模块内代码时,函数按 `模块::名` 限定;主程序代码原样返回。
+    fn qualify_name(&self, name: &str) -> String {
+        match &self.current_module {
+            Some(m) => format!("{}::{}", m, name),
+            None => name.to_string(),
         }
     }
 
     pub fn compile(&mut self, program: &Program) -> Result<()> {
         self.prelude()?;
 
+        // 模块先注册类型与函数签名,主程序才能引用模块符号。
+        let modules = self.modules.clone();
+        for m in &modules {
+            self.current_module = Some(m.name.clone());
+            if let Some(prog) = &m.program {
+                self.register_module_types(prog)?;
+            }
+        }
+        self.current_module = None;
+
         let fn_stmts = self.register_program_types(program)?;
         self.declare_fn_signatures(&fn_stmts)?;
+
+        // 模块函数体先于主程序编译,函数已注册,互相可见。
+        for m in &modules {
+            if let Some(prog) = &m.program {
+                self.current_module = Some(m.name.clone());
+                for fn_stmt in module_fn_statements(prog) {
+                    self.compile_fn(&fn_stmt)?;
+                }
+                self.current_module = None;
+            }
+        }
 
         for fn_stmt in &fn_stmts {
             self.compile_fn(fn_stmt)?;
@@ -121,27 +220,8 @@ impl<'ctx> CodeGen<'ctx> {
     /// so function signatures and field types can reference them. Returns
     /// the collected function definitions.
     fn register_program_types(&mut self, program: &Program) -> Result<Vec<FnStmt>> {
-        let struct_defs: Vec<StructDef> = program
-            .statements
-            .iter()
-            .filter_map(|s| match s {
-                Stmt::Struct(d) => Some(d.clone()),
-                _ => None,
-            })
-            .collect();
-        let enum_defs: Vec<EnumDef> = program
-            .statements
-            .iter()
-            .filter_map(|s| match s {
-                Stmt::Enum(d) => Some(d.clone()),
-                _ => None,
-            })
-            .collect();
-        self.check_type_cycles(&struct_defs, &enum_defs)?;
-        self.register_struct_names(&struct_defs)?;
-        self.register_enum_names(&enum_defs)?;
-        self.resolve_struct_bodies(&struct_defs)?;
-        self.resolve_enum_bodies(&enum_defs)?;
+        let (struct_defs, enum_defs) = program_type_definitions(program);
+        self.register_type_definitions(&struct_defs, &enum_defs)?;
 
         Ok(program
             .statements
@@ -151,6 +231,32 @@ impl<'ctx> CodeGen<'ctx> {
                 _ => None,
             })
             .collect())
+    }
+
+    /// Register a module file's struct/enum definitions and function
+    /// signatures. Called with `current_module` set, so signatures are
+    /// registered under qualified names.
+    fn register_module_types(&mut self, program: &Program) -> Result<()> {
+        let (struct_defs, enum_defs) = program_type_definitions(program);
+        self.register_type_definitions(&struct_defs, &enum_defs)?;
+        for fn_stmt in module_fn_statements(program) {
+            self.compile_fn_signature(&fn_stmt)?;
+        }
+        Ok(())
+    }
+
+    /// 结构体/枚举注册的公共阶段:循环检查 + 名称占位 + 字段/载荷解析。
+    fn register_type_definitions(
+        &mut self,
+        struct_defs: &[StructDef],
+        enum_defs: &[EnumDef],
+    ) -> Result<()> {
+        self.check_type_cycles(struct_defs, enum_defs)?;
+        self.register_struct_names(struct_defs)?;
+        self.register_enum_names(enum_defs)?;
+        self.resolve_struct_bodies(struct_defs)?;
+        self.resolve_enum_bodies(enum_defs)?;
+        Ok(())
     }
 
     fn declare_fn_signatures(&mut self, fn_stmts: &[FnStmt]) -> Result<()> {
@@ -167,7 +273,12 @@ impl<'ctx> CodeGen<'ctx> {
         let top_level: Vec<&Stmt> = program
             .statements
             .iter()
-            .filter(|s| !matches!(s, Stmt::Fn(_) | Stmt::Struct(_) | Stmt::Enum(_)))
+            .filter(|s| {
+                !matches!(
+                    s,
+                    Stmt::Fn(_) | Stmt::Struct(_) | Stmt::Enum(_) | Stmt::Import(_)
+                )
+            })
             .collect();
 
         if has_main {
@@ -209,6 +320,14 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     fn compile_fn_signature(&mut self, stmt: &FnStmt) -> Result<()> {
+        let qualified_name = self.qualify_name(&stmt.name);
+        if self.functions.contains_key(&qualified_name) {
+            return Err(HuziError::new_global(format!(
+                "Duplicate function definition: {}",
+                qualified_name
+            )));
+        }
+
         let param_types: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> = stmt
             .params
             .iter()
@@ -221,14 +340,14 @@ impl<'ctx> CodeGen<'ctx> {
             self.context.i32_type().fn_type(&param_types, false)
         };
 
-        let function = self.module.add_function(&stmt.name, fn_type, None);
+        let function = self.module.add_function(&qualified_name, fn_type, None);
         let param_llvm_types: Vec<inkwell::types::BasicTypeEnum<'ctx>> = stmt
             .params
             .iter()
             .map(|p| self.type_to_llvm(&p.param_type))
             .collect::<Result<Vec<_>>>()?;
         self.functions
-            .insert(stmt.name.clone(), (function, param_llvm_types));
+            .insert(qualified_name, (function, param_llvm_types));
 
         Ok(())
     }

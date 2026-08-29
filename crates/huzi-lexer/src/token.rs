@@ -16,6 +16,7 @@ pub enum Token {
     In,
     While,
     Return,
+    Import,
     Break,
     Continue,
     True,

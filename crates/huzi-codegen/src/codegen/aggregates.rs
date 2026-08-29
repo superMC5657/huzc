@@ -69,6 +69,21 @@ impl<'ctx> CodeGen<'ctx> {
         &mut self,
         expr: &EnumConstructExpr,
     ) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
+        // `mod::fn(args)` 与 `Enum::Variant(args)` 语法相同:首个路径段是
+        // 已导入模块时按函数调用处理。内置模块(m 由 add_module 注册但无
+        // AST)回退到非限定名走 builtin 调度;文件模块用限定名查函数表。
+        if let Some(m) = self.modules.iter().find(|m| m.name == expr.enum_name) {
+            let callee_name = if m.program.is_none() {
+                expr.variant.clone()
+            } else {
+                format!("{}::{}", m.name, expr.variant)
+            };
+            return self.compile_call(&CallExpr {
+                callee: Box::new(Expr::Ident(callee_name)),
+                arguments: expr.args.clone(),
+            });
+        }
+
         let (info, vinfo) = self.resolve_enum_variant(expr)?;
 
         let enum_st = match info.llvm {

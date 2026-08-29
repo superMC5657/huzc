@@ -5,6 +5,20 @@ use huzi_error::Result;
 use huzi_lexer::Token;
 
 impl Parser {
+    /// `import math` 或 `import mods.helpers`(点分路径,对应文件
+    /// `mods/helpers.hz`,符号绑定为末段名:`helpers::函数`)。
+    pub(super) fn parse_import_statement(&mut self) -> Result<Stmt> {
+        self.advance();
+        let mut name = self.expect_ident("Expected module name after 'import'")?;
+        while self.check(&Token::Dot) {
+            self.advance();
+            let seg = self.expect_ident("Expected identifier after '.' in import")?;
+            name.push('.');
+            name.push_str(&seg);
+        }
+        Ok(Stmt::Import(ImportStmt { name }))
+    }
+
     pub(super) fn parse_let_statement(&mut self) -> Result<Stmt> {
         self.advance();
 

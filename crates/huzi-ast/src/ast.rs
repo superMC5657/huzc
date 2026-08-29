@@ -57,6 +57,7 @@ pub enum Stmt {
     Struct(StructDef),
     Enum(EnumDef),
     Fn(FnStmt),
+    Import(ImportStmt),
     Expr(ExprStmt),
     Return(ReturnStmt),
     Break,
@@ -87,6 +88,14 @@ pub struct FnStmt {
 pub struct FnParam {
     pub name: String,
     pub param_type: Type,
+}
+
+/// `import math` — 导入一个模块。内置模块(如 math)由编译器提供;
+/// 文件模块解析为导入文件同目录(或工作目录)下的 `<路径>.hz`,
+/// 点分名(`mods.helpers`)对应子路径 `mods/helpers.hz`,符号绑定为末段名。
+#[derive(Debug, Clone)]
+pub struct ImportStmt {
+    pub name: String,
 }
 
 #[derive(Debug, Clone)]

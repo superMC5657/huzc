@@ -13,4 +13,7 @@
 
 mod codegen;
 
-pub use codegen::CodeGen;
+pub use codegen::{CodeGen, ModuleCode};
+
+/// 编译器内置模块:import 时不解析文件,`模块::函数` 调用走 builtin 调度。
+pub const BUILTIN_MODULES: &[&str] = &["math"];
