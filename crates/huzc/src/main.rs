@@ -48,10 +48,12 @@ fn main() {
         die("Error: LLVM module verification failed (this is a compiler bug)".to_string());
     }
 
-    // Release mode: run the LLVM IR optimizer before code generation.
-    // Dev mode passes the raw inkwell IR straight to llc.
-    if args.release {
-        optimize_ir(&paths, quiet);
+    // Optimization: run the LLVM IR optimizer before code generation when the
+    // effective level is above 0 (`--release` maps to level 2). Level 0 (dev
+    // mode) passes the raw inkwell IR straight to llc.
+    let opt_level = args.effective_opt_level();
+    if opt_level > 0 {
+        optimize_ir(&paths, opt_level, quiet);
     }
 
     // [5/5] Generating executable
@@ -113,17 +115,22 @@ fn compile_ir_to_object(paths: &OutputPaths) {
     .unwrap_or_else(|e| die(e));
 }
 
-/// Optimize the LLVM IR in place with `opt -O2` (release mode only).
-/// `opt` ships with LLVM alongside `llc`, so no extra toolchain is needed.
-fn optimize_ir(paths: &OutputPaths, quiet: bool) {
-    run_command("opt", &[
-        "-S",
-        "-O2",
-        "-o", paths.ll_path.to_str().unwrap(),
-        paths.ll_path.to_str().unwrap(),
-    ])
-    .unwrap_or_else(|e| die(e));
+/// Optimize the LLVM IR in place with `opt -O<level>` (only called when
+/// level > 0). `opt` ships with LLVM alongside `llc`, so no extra toolchain
+/// is needed. The level's pass pipeline covers inlining, constant folding
+/// and common-subexpression elimination.
+fn optimize_ir(paths: &OutputPaths, level: u8, quiet: bool) {
+    let ll_path = paths.ll_path.to_str().unwrap().to_string();
+    let opt_args: Vec<String> = vec![
+        "-S".to_string(),
+        format!("-O{}", level),
+        "-o".to_string(),
+        ll_path.clone(),
+        ll_path,
+    ];
+    let opt_args_ref: Vec<&str> = opt_args.iter().map(|s| s.as_str()).collect();
+    run_command("opt", &opt_args_ref).unwrap_or_else(|e| die(e));
     if !quiet {
-        println!("  [opt] -O2 optimization applied");
+        println!("  [opt] -O{} optimization applied", level);
     }
 }

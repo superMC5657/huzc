@@ -54,4 +54,16 @@ pub struct Args {
     /// Without this flag (dev mode) the IR is passed to llc unoptimized.
     #[arg(short = 'r', long)]
     pub release: bool,
+
+    /// LLVM optimization level for `opt` (0-3). Overrides `--release`:
+    /// 0 keeps the IR unoptimized, 2 matches `--release`.
+    #[arg(long, value_parser = clap::value_parser!(u8).range(0..4))]
+    pub opt_level: Option<u8>,
+}
+
+impl Args {
+    /// Effective LLVM opt level: explicit `--opt-level` wins over `--release`.
+    pub fn effective_opt_level(&self) -> u8 {
+        self.opt_level.unwrap_or(if self.release { 2 } else { 0 })
+    }
 }
