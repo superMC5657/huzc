@@ -48,6 +48,10 @@ fn main() {
     println!("  Linking to executable...");
     link(&paths, args.linker);
 
+    // Cleanup intermediate files
+    let _ = fs::remove_file(&paths.ll_path);
+    let _ = fs::remove_file(&paths.obj_path);
+
     println!("✓ {} generated successfully!", paths.exe_path.display());
 }
 

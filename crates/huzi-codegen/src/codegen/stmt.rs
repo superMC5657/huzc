@@ -32,112 +32,123 @@ impl<'ctx> CodeGen<'ctx> {
 
     pub(super) fn compile_let(&mut self, stmt: &LetStmt) -> Result<()> {
         match &stmt.value {
-            Some(Expr::ArrayLiteral(elements)) => {
-                if elements.is_empty() {
-                    return Err(HuziError::new_global("Empty array literal not supported"));
-                }
-
-                let mut values = Vec::with_capacity(elements.len());
-                for e in elements {
-                    values.push(self.compile_expr(e)?);
-                }
-
-                let elem_type = values[0].get_type();
-                let array_type = elem_type.array_type(values.len() as u32);
-                let array_ptr = self.build_alloca(array_type.into(), &stmt.name)?;
-
-                for (i, val) in values.iter().enumerate() {
-                    let val = self.coerce_value(elem_type, *val)?;
-                    let index = self.context.i32_type().const_int(i as u64, false);
-                    let elem_ptr = unsafe {
-                        self.builder
-                            .build_gep(elem_type, array_ptr, &[index], "arr_elem")
-                            .unwrap()
-                    };
-                    self.builder.build_store(elem_ptr, val).unwrap();
-                }
-
-                // Store the array address in a pointer slot so loading the
-                // variable yields the array address.
-                let ptr_ty = self.context.ptr_type(AddressSpace::default());
-                let slot_ptr = self.build_alloca(ptr_ty.into(), &format!("{}.ptr", stmt.name))?;
-                self.builder.build_store(slot_ptr, array_ptr).unwrap();
-                self.scope_insert(
-                    stmt.name.clone(),
-                    VarSlot {
-                        ptr: slot_ptr,
-                        ty: ptr_ty.into(),
-                        elem: Some(elem_type),
-                        array_len: Some(values.len() as u32),
-                        mutable: stmt.mutable,
-                    },
-                );
-            }
-            Some(value_expr) => {
-                let mut value = self.compile_expr(value_expr)?;
-
-                let var_type = match &stmt.type_annotation {
-                    Some(t) => {
-                        let ty = self.type_to_llvm(t)?;
-                        value = self.coerce_value(ty, value)?;
-                        ty
-                    }
-                    None => value.get_type(),
-                };
-
-                let alloca = self.build_alloca(var_type, &stmt.name)?;
-                self.builder.build_store(alloca, value).unwrap();
-
-                // Pointers to strings support char indexing.
-                let elem = if var_type.is_pointer_type() {
-                    Some(self.context.i8_type().into())
-                } else {
-                    None
-                };
-
-                self.scope_insert(
-                    stmt.name.clone(),
-                    VarSlot {
-                        ptr: alloca,
-                        ty: var_type,
-                        elem,
-                        array_len: None,
-                        mutable: stmt.mutable,
-                    },
-                );
-            }
-            None => {
-                // Declaration without initializer: requires a type annotation.
-                let ty = match &stmt.type_annotation {
-                    Some(t) => self.type_to_llvm(t)?,
-                    None => {
-                        return Err(HuziError::new_global(format!(
-                            "Variable '{}' declared without a value or a type annotation",
-                            stmt.name
-                        )))
-                    }
-                };
-                let alloca = self.build_alloca(ty, &stmt.name)?;
-                self.builder.build_store(alloca, ty.const_zero()).unwrap();
-
-                let elem = if ty.is_pointer_type() {
-                    Some(self.context.i8_type().into())
-                } else {
-                    None
-                };
-
-                self.scope_insert(
-                    stmt.name.clone(),
-                    VarSlot {
-                        ptr: alloca,
-                        ty,
-                        elem,
-                        array_len: None,
-                        mutable: stmt.mutable,
-                    },
-                );
-            }
+            Some(Expr::ArrayLiteral(elements)) => self.compile_let_array(stmt, elements),
+            Some(value_expr) => self.compile_let_with_value(stmt, value_expr),
+            None => self.compile_let_uninitialized(stmt),
         }
+    }
+
+    /// `let name = [a, b, c]` — build a fixed-size array and store its
+    /// address in a pointer slot so loading the variable yields the array
+    /// address.
+    fn compile_let_array(&mut self, stmt: &LetStmt, elements: &[Expr]) -> Result<()> {
+        if elements.is_empty() {
+            return Err(HuziError::new_global("Empty array literal not supported"));
+        }
+
+        let mut values = Vec::with_capacity(elements.len());
+        for e in elements {
+            values.push(self.compile_expr(e)?);
+        }
+
+        let elem_type = values[0].get_type();
+        let array_type = elem_type.array_type(values.len() as u32);
+        let array_ptr = self.build_alloca(array_type.into(), &stmt.name)?;
+
+        for (i, val) in values.iter().enumerate() {
+            let val = self.coerce_value(elem_type, *val)?;
+            let index = self.context.i32_type().const_int(i as u64, false);
+            let elem_ptr = unsafe {
+                self.builder
+                    .build_gep(elem_type, array_ptr, &[index], "arr_elem")
+                    .unwrap()
+            };
+            self.builder.build_store(elem_ptr, val).unwrap();
+        }
+
+        let ptr_ty = self.context.ptr_type(AddressSpace::default());
+        let slot_ptr = self.build_alloca(ptr_ty.into(), &format!("{}.ptr", stmt.name))?;
+        self.builder.build_store(slot_ptr, array_ptr).unwrap();
+        self.scope_insert(
+            stmt.name.clone(),
+            VarSlot {
+                ptr: slot_ptr,
+                ty: ptr_ty.into(),
+                elem: Some(elem_type),
+                array_len: Some(values.len() as u32),
+                mutable: stmt.mutable,
+            },
+        );
+        Ok(())
+    }
+
+    /// `let name[: T] = value`.
+    fn compile_let_with_value(&mut self, stmt: &LetStmt, value_expr: &Expr) -> Result<()> {
+        let mut value = self.compile_expr(value_expr)?;
+
+        let var_type = match &stmt.type_annotation {
+            Some(t) => {
+                let ty = self.type_to_llvm(t)?;
+                value = self.coerce_value(ty, value)?;
+                ty
+            }
+            None => value.get_type(),
+        };
+
+        let alloca = self.build_alloca(var_type, &stmt.name)?;
+        self.builder.build_store(alloca, value).unwrap();
+
+        // Pointers to strings support char indexing.
+        let elem = if var_type.is_pointer_type() {
+            Some(self.context.i8_type().into())
+        } else {
+            None
+        };
+
+        self.scope_insert(
+            stmt.name.clone(),
+            VarSlot {
+                ptr: alloca,
+                ty: var_type,
+                elem,
+                array_len: None,
+                mutable: stmt.mutable,
+            },
+        );
+        Ok(())
+    }
+
+    /// `let name: T;` — declaration without initializer, zero-initialized.
+    fn compile_let_uninitialized(&mut self, stmt: &LetStmt) -> Result<()> {
+        // Requires a type annotation.
+        let ty = match &stmt.type_annotation {
+            Some(t) => self.type_to_llvm(t)?,
+            None => {
+                return Err(HuziError::new_global(format!(
+                    "Variable '{}' declared without a value or a type annotation",
+                    stmt.name
+                )))
+            }
+        };
+        let alloca = self.build_alloca(ty, &stmt.name)?;
+        self.builder.build_store(alloca, ty.const_zero()).unwrap();
+
+        let elem = if ty.is_pointer_type() {
+            Some(self.context.i8_type().into())
+        } else {
+            None
+        };
+
+        self.scope_insert(
+            stmt.name.clone(),
+            VarSlot {
+                ptr: alloca,
+                ty,
+                elem,
+                array_len: None,
+                mutable: stmt.mutable,
+            },
+        );
         Ok(())
     }
 
@@ -328,18 +339,7 @@ impl<'ctx> CodeGen<'ctx> {
 
     pub(super) fn compile_for(&mut self, stmt: &ForStmt) -> Result<()> {
         let i_type = self.context.i32_type();
-
-        let start = self.compile_expr(&stmt.start)?;
-        let start = match self.coerce_value(i_type.into(), start)? {
-            inkwell::values::BasicValueEnum::IntValue(iv) => iv,
-            _ => return Err(HuziError::new_global("for loop start must be an integer")),
-        };
-
-        let end = self.compile_expr(&stmt.end)?;
-        let end = match self.coerce_value(i_type.into(), end)? {
-            inkwell::values::BasicValueEnum::IntValue(iv) => iv,
-            _ => return Err(HuziError::new_global("for loop end must be an integer")),
-        };
+        let (start, end) = self.compile_for_bounds(stmt)?;
 
         let function = self.current_function()?;
 
@@ -357,7 +357,46 @@ impl<'ctx> CodeGen<'ctx> {
             .build_unconditional_branch(loop_block)
             .unwrap();
 
-        // Condition check.
+        self.emit_for_condition(i_type, i_alloca, end, body_block, loop_block, after_block)?;
+        self.emit_for_body(stmt, i_type, i_alloca, body_block, loop_block)?;
+
+        self.loop_stack.pop();
+
+        // Continue after the loop.
+        self.builder.position_at_end(after_block);
+
+        Ok(())
+    }
+
+    /// Compile the range bounds; both must coerce to i32.
+    fn compile_for_bounds(&mut self, stmt: &ForStmt) -> Result<(inkwell::values::IntValue<'ctx>, inkwell::values::IntValue<'ctx>)> {
+        let i_type = self.context.i32_type();
+
+        let start = self.compile_expr(&stmt.start)?;
+        let start = match self.coerce_value(i_type.into(), start)? {
+            inkwell::values::BasicValueEnum::IntValue(iv) => iv,
+            _ => return Err(HuziError::new_global("for loop start must be an integer")),
+        };
+
+        let end = self.compile_expr(&stmt.end)?;
+        let end = match self.coerce_value(i_type.into(), end)? {
+            inkwell::values::BasicValueEnum::IntValue(iv) => iv,
+            _ => return Err(HuziError::new_global("for loop end must be an integer")),
+        };
+
+        Ok((start, end))
+    }
+
+    /// Emit the loop-header block that re-checks `i < end` every iteration.
+    fn emit_for_condition(
+        &mut self,
+        i_type: inkwell::types::IntType<'ctx>,
+        i_alloca: inkwell::values::PointerValue<'ctx>,
+        end: inkwell::values::IntValue<'ctx>,
+        body_block: inkwell::basic_block::BasicBlock<'ctx>,
+        loop_block: inkwell::basic_block::BasicBlock<'ctx>,
+        after_block: inkwell::basic_block::BasicBlock<'ctx>,
+    ) -> Result<()> {
         self.builder.position_at_end(loop_block);
         let i = self
             .builder
@@ -371,8 +410,19 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder
             .build_conditional_branch(condition, body_block, after_block)
             .unwrap();
+        Ok(())
+    }
 
-        // Body.
+    /// Emit the loop-body block: bind the loop variable in a fresh scope,
+    /// run the body, then increment `i` and jump back to the header.
+    fn emit_for_body(
+        &mut self,
+        stmt: &ForStmt,
+        i_type: inkwell::types::IntType<'ctx>,
+        i_alloca: inkwell::values::PointerValue<'ctx>,
+        body_block: inkwell::basic_block::BasicBlock<'ctx>,
+        loop_block: inkwell::basic_block::BasicBlock<'ctx>,
+    ) -> Result<()> {
         self.builder.position_at_end(body_block);
         self.push_scope();
         self.scope_insert(
@@ -402,12 +452,6 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder
             .build_unconditional_branch(loop_block)
             .unwrap();
-
-        self.loop_stack.pop();
-
-        // Continue after the loop.
-        self.builder.position_at_end(after_block);
-
         Ok(())
     }
 

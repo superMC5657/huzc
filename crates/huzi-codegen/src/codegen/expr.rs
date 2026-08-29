@@ -65,11 +65,33 @@ impl<'ctx> CodeGen<'ctx> {
         let mut left = self.compile_expr(&expr.left)?;
         let mut right = self.compile_expr(&expr.right)?;
 
-        // Mixed int/float: convert the int operand to the float operand's type.
+        self.coerce_binary_operands(&mut left, &mut right);
+
+        let value = match expr.operator {
+            BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
+                self.build_arithmetic(&expr.operator, &left, &right)?
+            }
+            BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
+                let (int_pred, float_pred) = Self::compare_predicates(&expr.operator);
+                self.build_int_or_float_compare(int_pred, float_pred, &left, &right)
+            }
+            BinOp::And | BinOp::Or => unreachable!("short-circuit handled above"),
+        };
+
+        Ok(value)
+    }
+
+    /// Mixed int/float: convert the int operand to the float operand's type.
+    /// Same-type ints: sign-extend the narrower operand to the wider width.
+    fn coerce_binary_operands(
+        &mut self,
+        left: &mut inkwell::values::BasicValueEnum<'ctx>,
+        right: &mut inkwell::values::BasicValueEnum<'ctx>,
+    ) {
         if left.is_float_value() && right.is_int_value() {
             let float_ty = left.into_float_value().get_type();
             let int_val = right.into_int_value();
-            right = self
+            *right = self
                 .builder
                 .build_signed_int_to_float(int_val, float_ty, "to_float")
                 .unwrap()
@@ -77,137 +99,132 @@ impl<'ctx> CodeGen<'ctx> {
         } else if left.is_int_value() && right.is_float_value() {
             let float_ty = right.into_float_value().get_type();
             let int_val = left.into_int_value();
-            left = self
+            *left = self
                 .builder
                 .build_signed_int_to_float(int_val, float_ty, "to_float")
                 .unwrap()
                 .into();
         } else if left.is_int_value() && right.is_int_value() {
-            // Align integer widths (sign-extend the narrower operand).
             let lw = left.into_int_value().get_type().get_bit_width();
             let rw = right.into_int_value().get_type().get_bit_width();
             if lw < rw {
                 let target = right.into_int_value().get_type();
-                left = self
+                *left = self
                     .builder
                     .build_int_s_extend(left.into_int_value(), target, "widen")
                     .unwrap()
                     .into();
             } else if rw < lw {
                 let target = left.into_int_value().get_type();
-                right = self
+                *right = self
                     .builder
                     .build_int_s_extend(right.into_int_value(), target, "widen")
                     .unwrap()
                     .into();
             }
         }
+    }
 
-        let value = match expr.operator {
-            BinOp::Add => {
-                if left.is_int_value() {
-                    self.builder
-                        .build_int_add(left.into_int_value(), right.into_int_value(), "add")
-                        .unwrap()
-                        .into()
-                } else {
-                    self.builder
-                        .build_float_add(left.into_float_value(), right.into_float_value(), "fadd")
-                        .unwrap()
-                        .into()
-                }
-            }
-            BinOp::Sub => {
-                if left.is_int_value() {
-                    self.builder
-                        .build_int_sub(left.into_int_value(), right.into_int_value(), "sub")
-                        .unwrap()
-                        .into()
-                } else {
-                    self.builder
-                        .build_float_sub(left.into_float_value(), right.into_float_value(), "fsub")
-                        .unwrap()
-                        .into()
-                }
-            }
-            BinOp::Mul => {
-                if left.is_int_value() {
-                    self.builder
-                        .build_int_mul(left.into_int_value(), right.into_int_value(), "mul")
-                        .unwrap()
-                        .into()
-                } else {
-                    self.builder
-                        .build_float_mul(left.into_float_value(), right.into_float_value(), "fmul")
-                        .unwrap()
-                        .into()
-                }
-            }
-            BinOp::Div => {
-                if left.is_int_value() {
-                    self.builder
-                        .build_int_signed_div(left.into_int_value(), right.into_int_value(), "div")
-                        .unwrap()
-                        .into()
-                } else {
-                    self.builder
-                        .build_float_div(left.into_float_value(), right.into_float_value(), "fdiv")
-                        .unwrap()
-                        .into()
-                }
-            }
-            BinOp::Mod => {
-                if left.is_int_value() {
-                    self.builder
-                        .build_int_signed_rem(left.into_int_value(), right.into_int_value(), "mod")
-                        .unwrap()
-                        .into()
-                } else {
-                    return Err(HuziError::new_global(
-                        "Operator '%' requires integer operands",
-                    ));
-                }
-            }
-            BinOp::Eq => self.build_int_or_float_compare(
-                inkwell::IntPredicate::EQ,
-                inkwell::FloatPredicate::OEQ,
-                &left,
-                &right,
-            ),
-            BinOp::Neq => self.build_int_or_float_compare(
-                inkwell::IntPredicate::NE,
-                inkwell::FloatPredicate::ONE,
-                &left,
-                &right,
-            ),
-            BinOp::Lt => self.build_int_or_float_compare(
-                inkwell::IntPredicate::SLT,
-                inkwell::FloatPredicate::OLT,
-                &left,
-                &right,
-            ),
-            BinOp::Le => self.build_int_or_float_compare(
-                inkwell::IntPredicate::SLE,
-                inkwell::FloatPredicate::OLE,
-                &left,
-                &right,
-            ),
-            BinOp::Gt => self.build_int_or_float_compare(
-                inkwell::IntPredicate::SGT,
-                inkwell::FloatPredicate::OGT,
-                &left,
-                &right,
-            ),
-            BinOp::Ge => self.build_int_or_float_compare(
-                inkwell::IntPredicate::SGE,
-                inkwell::FloatPredicate::OGE,
-                &left,
-                &right,
-            ),
-            BinOp::And | BinOp::Or => unreachable!("short-circuit handled above"),
+    fn build_arithmetic(
+        &mut self,
+        op: &BinOp,
+        left: &inkwell::values::BasicValueEnum<'ctx>,
+        right: &inkwell::values::BasicValueEnum<'ctx>,
+    ) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
+        if left.is_int_value() {
+            self.build_int_arithmetic(op, left, right)
+        } else {
+            self.build_float_arithmetic(op, left, right)
+        }
+    }
+
+    fn build_int_arithmetic(
+        &mut self,
+        op: &BinOp,
+        left: &inkwell::values::BasicValueEnum<'ctx>,
+        right: &inkwell::values::BasicValueEnum<'ctx>,
+    ) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
+        let (l, r) = (left.into_int_value(), right.into_int_value());
+        let value = match *op {
+            BinOp::Add => self
+                .builder
+                .build_int_add(l, r, "add")
+                .unwrap()
+                .into(),
+            BinOp::Sub => self
+                .builder
+                .build_int_sub(l, r, "sub")
+                .unwrap()
+                .into(),
+            BinOp::Mul => self
+                .builder
+                .build_int_mul(l, r, "mul")
+                .unwrap()
+                .into(),
+            BinOp::Div => self
+                .builder
+                .build_int_signed_div(l, r, "div")
+                .unwrap()
+                .into(),
+            BinOp::Mod => self
+                .builder
+                .build_int_signed_rem(l, r, "mod")
+                .unwrap()
+                .into(),
+            _ => unreachable!("non-arithmetic operator reached build_int_arithmetic"),
         };
-
         Ok(value)
+    }
+
+    fn build_float_arithmetic(
+        &mut self,
+        op: &BinOp,
+        left: &inkwell::values::BasicValueEnum<'ctx>,
+        right: &inkwell::values::BasicValueEnum<'ctx>,
+    ) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
+        if *op == BinOp::Mod {
+            return Err(HuziError::new_global(
+                "Operator '%' requires integer operands",
+            ));
+        }
+
+        let (l, r) = (left.into_float_value(), right.into_float_value());
+        let value = match *op {
+            BinOp::Add => self
+                .builder
+                .build_float_add(l, r, "fadd")
+                .unwrap()
+                .into(),
+            BinOp::Sub => self
+                .builder
+                .build_float_sub(l, r, "fsub")
+                .unwrap()
+                .into(),
+            BinOp::Mul => self
+                .builder
+                .build_float_mul(l, r, "fmul")
+                .unwrap()
+                .into(),
+            BinOp::Div => self
+                .builder
+                .build_float_div(l, r, "fdiv")
+                .unwrap()
+                .into(),
+            _ => unreachable!("non-arithmetic operator reached build_float_arithmetic"),
+        };
+        Ok(value)
+    }
+
+    fn compare_predicates(op: &BinOp) -> (inkwell::IntPredicate, inkwell::FloatPredicate) {
+        match op {
+            BinOp::Eq => (inkwell::IntPredicate::EQ, inkwell::FloatPredicate::OEQ),
+            BinOp::Neq => (inkwell::IntPredicate::NE, inkwell::FloatPredicate::ONE),
+            BinOp::Lt => (inkwell::IntPredicate::SLT, inkwell::FloatPredicate::OLT),
+            BinOp::Le => (inkwell::IntPredicate::SLE, inkwell::FloatPredicate::OLE),
+            BinOp::Gt => (inkwell::IntPredicate::SGT, inkwell::FloatPredicate::OGT),
+            BinOp::Ge => (inkwell::IntPredicate::SGE, inkwell::FloatPredicate::OGE),
+            _ => unreachable!("non-comparison operator reached compare_predicates"),
+        }
     }
 
     pub(super) fn build_int_or_float_compare(

@@ -102,8 +102,22 @@ impl<'ctx> CodeGen<'ctx> {
     pub fn compile(&mut self, program: &Program) -> Result<()> {
         self.prelude()?;
 
-        // Register all top-level struct/enum definitions before anything else
-        // so function signatures and field types can reference them.
+        let fn_stmts = self.register_program_types(program)?;
+        self.declare_fn_signatures(&fn_stmts)?;
+
+        for fn_stmt in &fn_stmts {
+            self.compile_fn(fn_stmt)?;
+        }
+
+        self.compile_top_level(program, &fn_stmts)?;
+
+        Ok(())
+    }
+
+    /// Register all top-level struct/enum definitions before anything else
+    /// so function signatures and field types can reference them. Returns
+    /// the collected function definitions.
+    fn register_program_types(&mut self, program: &Program) -> Result<Vec<FnStmt>> {
         let struct_defs: Vec<StructDef> = program
             .statements
             .iter()
@@ -126,25 +140,26 @@ impl<'ctx> CodeGen<'ctx> {
         self.resolve_struct_bodies(&struct_defs)?;
         self.resolve_enum_bodies(&enum_defs)?;
 
-        let fn_stmts: Vec<FnStmt> = program
+        Ok(program
             .statements
             .iter()
             .filter_map(|s| match s {
                 Stmt::Fn(f) => Some(f.clone()),
                 _ => None,
             })
-            .collect();
+            .collect())
+    }
 
-        for fn_stmt in &fn_stmts {
+    fn declare_fn_signatures(&mut self, fn_stmts: &[FnStmt]) -> Result<()> {
+        for fn_stmt in fn_stmts {
             self.compile_fn_signature(fn_stmt)?;
         }
+        Ok(())
+    }
 
-        for fn_stmt in &fn_stmts {
-            self.compile_fn(fn_stmt)?;
-        }
-
-        // Top-level statements must live in a `main` function; synthesize one
-        // if the program only has top-level code.
+    /// Top-level statements must live in a `main` function; synthesize one
+    /// if the program only has top-level code.
+    fn compile_top_level(&mut self, program: &Program, fn_stmts: &[FnStmt]) -> Result<()> {
         let has_main = fn_stmts.iter().any(|f| f.name == "main");
         let top_level: Vec<&Stmt> = program
             .statements
@@ -158,39 +173,37 @@ impl<'ctx> CodeGen<'ctx> {
                     "Cannot mix top-level statements with `fn main`; move the top-level code into a function",
                 ));
             }
-        } else {
-            if top_level.is_empty() {
-                return Err(HuziError::new_global(
-                    "No `fn main` found; define `fn main() -> i32 { ... }` or write top-level statements",
-                ));
-            }
+            return Ok(());
+        }
 
-            let main_type = self.context.i32_type().fn_type(&[], false);
-            let main_fn = self.module.add_function("main", main_type, None);
-            self.functions.insert("main".to_string(), (main_fn, vec![]));
+        if top_level.is_empty() {
+            return Err(HuziError::new_global(
+                "No `fn main` found; define `fn main() -> i32 { ... }` or write top-level statements",
+            ));
+        }
 
-            let entry = self.context.append_basic_block(main_fn, "entry");
-            self.builder.position_at_end(entry);
-            self.current_return_type = Some(self.context.i32_type().into());
-            self.scopes = vec![HashMap::new()];
+        let main_type = self.context.i32_type().fn_type(&[], false);
+        let main_fn = self.module.add_function("main", main_type, None);
+        self.functions.insert("main".to_string(), (main_fn, vec![]));
 
-            for stmt in &top_level {
-                self.compile_stmt(stmt)?;
-            }
+        let entry = self.context.append_basic_block(main_fn, "entry");
+        self.builder.position_at_end(entry);
+        self.current_return_type = Some(self.context.i32_type().into());
+        self.scopes = vec![HashMap::new()];
 
-            if self.at_open_end() {
-                self.builder
-                    .build_return(Some(&self.context.i32_type().const_int(0, false)))
-                    .unwrap();
-            }
+        for stmt in &top_level {
+            self.compile_stmt(stmt)?;
+        }
+
+        if self.at_open_end() {
+            self.builder
+                .build_return(Some(&self.context.i32_type().const_int(0, false)))
+                .unwrap();
         }
 
         Ok(())
     }
 
-}
-
-impl<'ctx> CodeGen<'ctx> {
     fn compile_fn_signature(&mut self, stmt: &FnStmt) -> Result<()> {
         let param_types: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> = stmt
             .params

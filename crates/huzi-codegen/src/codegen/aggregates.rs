@@ -69,21 +69,7 @@ impl<'ctx> CodeGen<'ctx> {
         &mut self,
         expr: &EnumConstructExpr,
     ) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
-        let info = self
-            .enums
-            .get(&expr.enum_name)
-            .cloned()
-            .ok_or_else(|| HuziError::new_global(format!("Unknown enum: {}", expr.enum_name)))?;
-        let vinfo = info
-            .variants
-            .iter()
-            .find(|v| v.name == expr.variant)
-            .ok_or_else(|| {
-                HuziError::new_global(format!(
-                    "Enum '{}' has no variant '{}'",
-                    expr.enum_name, expr.variant
-                ))
-            })?;
+        let (info, vinfo) = self.resolve_enum_variant(expr)?;
 
         let enum_st = match info.llvm {
             None => {
@@ -103,6 +89,43 @@ impl<'ctx> CodeGen<'ctx> {
             Some(st) => st,
         };
 
+        self.build_data_enum_value(expr, &info, &vinfo, enum_st)
+    }
+
+    /// Look up the enum and the variant named by an `Enum::Variant` expr.
+    fn resolve_enum_variant(
+        &self,
+        expr: &EnumConstructExpr,
+    ) -> Result<(EnumInfo<'ctx>, EnumVariantInfo<'ctx>)> {
+        let info = self
+            .enums
+            .get(&expr.enum_name)
+            .cloned()
+            .ok_or_else(|| HuziError::new_global(format!("Unknown enum: {}", expr.enum_name)))?;
+        let vinfo = info
+            .variants
+            .iter()
+            .find(|v| v.name == expr.variant)
+            .cloned()
+            .ok_or_else(|| {
+                HuziError::new_global(format!(
+                    "Enum '{}' has no variant '{}'",
+                    expr.enum_name, expr.variant
+                ))
+            })?;
+        Ok((info, vinfo))
+    }
+
+    /// Build `{ i32 tag, payload union }` for a data-carrying enum variant:
+    /// check arity, store the discriminant, store the payload, and load the
+    /// finished value.
+    fn build_data_enum_value(
+        &mut self,
+        expr: &EnumConstructExpr,
+        info: &EnumInfo<'ctx>,
+        vinfo: &EnumVariantInfo<'ctx>,
+        enum_st: inkwell::types::StructType<'ctx>,
+    ) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
         match (&vinfo.payload, expr.args.len()) {
             (None, 0) => {}
             (Some(_), 1) => {}
@@ -257,14 +280,7 @@ impl<'ctx> CodeGen<'ctx> {
                 let info = info.ok_or_else(|| {
                     HuziError::new_global("Cannot match variants without a known enum type")
                 })?;
-                let vinfo = info.variants.iter().find(|v| v.name == *variant).ok_or_else(
-                    || {
-                        HuziError::new_global(format!(
-                            "Enum '{}' has no variant '{}'",
-                            info.name, variant
-                        ))
-                    },
-                )?;
+                let vinfo = find_variant(info, variant)?;
 
                 let expected = self
                     .context
@@ -285,13 +301,9 @@ impl<'ctx> CodeGen<'ctx> {
 
                 // Matching arm: optionally bind the payload, evaluate the body.
                 self.builder.position_at_end(then_bb);
-                if let Some(bname) = binding {
-                    self.bind_match_payload(data, info, vinfo, bname)?;
-                }
-                let then_val = self.compile_block_value(&arm.body)?;
-                if binding.is_some() {
-                    self.pop_scope();
-                }
+                let then_val =
+                    self.compile_match_arm_body(data, info, vinfo, binding, &arm.body)?;
+
                 let result_ty = then_val.get_type();
                 let result_ptr = self.build_alloca(result_ty, "match_val")?;
                 self.builder.build_store(result_ptr, then_val).unwrap();
@@ -316,6 +328,29 @@ impl<'ctx> CodeGen<'ctx> {
                 Ok(result)
             }
         }
+    }
+
+    /// Bind the payload (if the pattern has a binding) and evaluate the arm
+    /// body on the matching branch.
+    fn compile_match_arm_body(
+        &mut self,
+        data: Option<(
+            inkwell::types::StructType<'ctx>,
+            PointerValue<'ctx>,
+        )>,
+        info: &EnumInfo<'ctx>,
+        vinfo: &EnumVariantInfo<'ctx>,
+        binding: &Option<String>,
+        body: &Block,
+    ) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
+        if let Some(bname) = binding {
+            self.bind_match_payload(data, info, vinfo, bname)?;
+        }
+        let value = self.compile_block_value(body)?;
+        if binding.is_some() {
+            self.pop_scope();
+        }
+        Ok(value)
     }
 
     /// Enter a scope with the pattern binding bound to the variant's payload.
@@ -496,4 +531,14 @@ impl<'ctx> CodeGen<'ctx> {
 
     // ==================== Output ====================
 
+}
+
+/// Find the variant info for `variant` inside `info`.
+fn find_variant<'ctx, 'a>(
+    info: &'a EnumInfo<'ctx>,
+    variant: &str,
+) -> Result<&'a EnumVariantInfo<'ctx>> {
+    info.variants.iter().find(|v| v.name == variant).ok_or_else(|| {
+        HuziError::new_global(format!("Enum '{}' has no variant '{}'", info.name, variant))
+    })
 }

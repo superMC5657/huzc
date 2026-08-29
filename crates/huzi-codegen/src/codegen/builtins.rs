@@ -6,6 +6,13 @@ use huzi_error::{HuziError, Result};
 
 impl<'ctx> CodeGen<'ctx> {
     pub(super) fn prelude(&mut self) -> Result<()> {
+        self.declare_libc_functions();
+        self.declare_libm_functions();
+        Ok(())
+    }
+
+    /// Declare the C runtime functions used by builtins (link to libc).
+    fn declare_libc_functions(&mut self) {
         // printf for print function
         let print_fn = self.context.i32_type().fn_type(
             &[self
@@ -47,7 +54,29 @@ impl<'ctx> CodeGen<'ctx> {
         );
         self.module.add_function("sprintf", sprintf_fn, None);
 
-        // Math functions (link to libm)
+        // strlen for string length
+        let strlen_fn = self.context.i32_type().fn_type(
+            &[self
+                .context
+                .ptr_type(AddressSpace::default())
+                .into()],
+            false,
+        );
+        self.module.add_function("strlen", strlen_fn, None);
+
+        // strcpy for string copy
+        let strcpy_fn = self.context.i32_type().fn_type(
+            &[
+                self.context.ptr_type(AddressSpace::default()).into(),
+                self.context.ptr_type(AddressSpace::default()).into(),
+            ],
+            false,
+        );
+        self.module.add_function("strcpy", strcpy_fn, None);
+    }
+
+    /// Declare the math functions (link to libm).
+    fn declare_libm_functions(&mut self) {
         let sqrt_fn = self.context.f64_type().fn_type(&[self.context.f64_type().into()], false);
         self.module.add_function("sqrt", sqrt_fn, None);
 
@@ -73,28 +102,6 @@ impl<'ctx> CodeGen<'ctx> {
             let f = self.context.f64_type().fn_type(&[self.context.f64_type().into()], false);
             self.module.add_function(name, f, None);
         }
-
-        // strlen for string length
-        let strlen_fn = self.context.i32_type().fn_type(
-            &[self
-                .context
-                .ptr_type(AddressSpace::default())
-                .into()],
-            false,
-        );
-        self.module.add_function("strlen", strlen_fn, None);
-
-        // strcpy for string copy
-        let strcpy_fn = self.context.i32_type().fn_type(
-            &[
-                self.context.ptr_type(AddressSpace::default()).into(),
-                self.context.ptr_type(AddressSpace::default()).into(),
-            ],
-            false,
-        );
-        self.module.add_function("strcpy", strcpy_fn, None);
-
-        Ok(())
     }
 
     // ==================== Scope helpers ====================
@@ -123,63 +130,7 @@ impl<'ctx> CodeGen<'ctx> {
 
         for arg in arguments.iter() {
             let value = self.compile_expr(arg)?;
-
-            match value {
-                inkwell::values::BasicValueEnum::IntValue(iv)
-                    if iv.get_type().get_bit_width() == 1 =>
-                {
-                    // Booleans print as true/false.
-                    let s = self.build_bool_str(iv)?;
-                    format_string.push_str("%s");
-                    args.push(s.into());
-                }
-                inkwell::values::BasicValueEnum::IntValue(iv) => {
-                    match iv.get_type().get_bit_width() {
-                        8 => {
-                            // Chars are printed as characters.
-                            format_string.push_str("%c");
-                            let c = self
-                                .builder
-                                .build_int_z_extend(iv, self.context.i32_type(), "char_promote")
-                                .unwrap();
-                            args.push(c.into());
-                        }
-                        64 => {
-                            format_string.push_str("%ld");
-                            args.push(iv.into());
-                        }
-                        _ => {
-                            format_string.push_str("%d");
-                            args.push(iv.into());
-                        }
-                    }
-                }
-                inkwell::values::BasicValueEnum::FloatValue(fv) => {
-                    // varargs promote floats to double
-                    let f64_val = if fv.get_type() == self.context.f64_type() {
-                        fv
-                    } else {
-                        self.builder
-                            .build_float_ext(fv, self.context.f64_type(), "f_promote")
-                            .unwrap()
-                    };
-                    if fv.get_type() == self.context.f32_type() {
-                        format_string.push_str("%g");
-                    } else {
-                        format_string.push_str("%f");
-                    }
-                    args.push(f64_val.into());
-                }
-                inkwell::values::BasicValueEnum::PointerValue(pv) => {
-                    format_string.push_str("%s");
-                    args.push(pv.into());
-                }
-                _ => {
-                    return Err(HuziError::new_global(
-                        "print() does not support this value type",
-                    ))
-                }
-            }
+            self.format_print_value(value, &mut format_string, &mut args)?;
         }
 
         format_string.push('\n');
@@ -199,6 +150,74 @@ impl<'ctx> CodeGen<'ctx> {
             .unwrap();
 
         Ok(call.try_as_basic_value().unwrap_left())
+    }
+
+    /// Append one printed value to the printf format string and argument
+    /// list, promoting/narrowing according to C varargs conventions.
+    fn format_print_value(
+        &mut self,
+        value: inkwell::values::BasicValueEnum<'ctx>,
+        format_string: &mut String,
+        args: &mut Vec<inkwell::values::BasicMetadataValueEnum<'ctx>>,
+    ) -> Result<()> {
+        match value {
+            inkwell::values::BasicValueEnum::IntValue(iv)
+                if iv.get_type().get_bit_width() == 1 =>
+            {
+                // Booleans print as true/false.
+                let s = self.build_bool_str(iv)?;
+                format_string.push_str("%s");
+                args.push(s.into());
+            }
+            inkwell::values::BasicValueEnum::IntValue(iv) => {
+                match iv.get_type().get_bit_width() {
+                    8 => {
+                        // Chars are printed as characters.
+                        format_string.push_str("%c");
+                        let c = self
+                            .builder
+                            .build_int_z_extend(iv, self.context.i32_type(), "char_promote")
+                            .unwrap();
+                        args.push(c.into());
+                    }
+                    64 => {
+                        format_string.push_str("%ld");
+                        args.push(iv.into());
+                    }
+                    _ => {
+                        format_string.push_str("%d");
+                        args.push(iv.into());
+                    }
+                }
+            }
+            inkwell::values::BasicValueEnum::FloatValue(fv) => {
+                // varargs promote floats to double
+                let f64_val = if fv.get_type() == self.context.f64_type() {
+                    fv
+                } else {
+                    self.builder
+                        .build_float_ext(fv, self.context.f64_type(), "f_promote")
+                        .unwrap()
+                };
+                if fv.get_type() == self.context.f32_type() {
+                    format_string.push_str("%g");
+                } else {
+                    format_string.push_str("%f");
+                }
+                args.push(f64_val.into());
+            }
+            inkwell::values::BasicValueEnum::PointerValue(pv) => {
+                format_string.push_str("%s");
+                args.push(pv.into());
+            }
+            _ => {
+                return Err(HuziError::new_global(
+                    "print() does not support this value type",
+                ))
+            }
+        }
+
+        Ok(())
     }
 
     /// Build a global "true"/"false" string selected by the given i1 condition.
@@ -230,18 +249,10 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     pub(super) fn compile_read_line(&mut self) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
-        let malloc_fn = self.module.get_function("malloc").unwrap();
         let getchar_fn = self.module.get_function("getchar").unwrap();
 
         // Allocate buffer (256 bytes)
-        let buffer_size = self.context.i32_type().const_int(256, false);
-        let buffer = self
-            .builder
-            .build_call(malloc_fn, &[buffer_size.into()], "buffer")
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_left()
-            .into_pointer_value();
+        let buffer = self.alloc_str_buffer(256)?;
 
         let i32_type = self.context.i32_type();
         let idx_ptr = self.build_alloca(i32_type.into(), "read_idx")?;
@@ -258,7 +269,7 @@ impl<'ctx> CodeGen<'ctx> {
             .build_unconditional_branch(loop_block)
             .unwrap();
 
-        // Read one char per iteration until '\n', EOF, or buffer full.
+        // Read one char per iteration until '''PLACEHOLDER''', EOF, or buffer full.
         self.builder.position_at_end(loop_block);
         let c = self
             .builder
@@ -274,11 +285,41 @@ impl<'ctx> CodeGen<'ctx> {
             .unwrap()
             .into_int_value();
 
+        let cont = self.read_line_continue(c, idx, i32_type)?;
+
+        self.builder
+            .build_conditional_branch(cont, store_block, done_block)
+            .unwrap();
+
+        self.read_line_store(buffer, idx_ptr, idx, c, i32_type, store_block, loop_block)?;
+
+        // Null-terminate and continue in the done block.
+        self.builder.position_at_end(done_block);
+        let term_ptr = unsafe {
+            self.builder
+                .build_gep(self.context.i8_type(), buffer, &[idx], "term_ptr")
+                .unwrap()
+        };
+        self.builder
+            .build_store(term_ptr, self.context.i8_type().const_int(0, false))
+            .unwrap();
+
+        Ok(buffer.into())
+    }
+
+    /// Whether the read loop should keep going: space left in the buffer,
+    /// current char is not a newline, and not EOF.
+    fn read_line_continue(
+        &mut self,
+        c: inkwell::values::IntValue<'ctx>,
+        idx: inkwell::values::IntValue<'ctx>,
+        i32_type: inkwell::types::IntType<'ctx>,
+    ) -> Result<inkwell::values::IntValue<'ctx>> {
         let has_space = self
             .builder
             .build_int_compare(inkwell::IntPredicate::SLT, idx, i32_type.const_int(255, false), "has_space")
             .unwrap();
-        let not_nl = self
+                let not_nl = self
             .builder
             .build_int_compare(inkwell::IntPredicate::NE, c, i32_type.const_int('\n' as u64, false), "not_nl")
             .unwrap();
@@ -288,11 +329,21 @@ impl<'ctx> CodeGen<'ctx> {
             .unwrap();
         let cont = self.builder.build_and(has_space, not_nl, "cont").unwrap();
         let cont = self.builder.build_and(cont, not_eof, "cont2").unwrap();
+        Ok(cont)
+    }
 
-        self.builder
-            .build_conditional_branch(cont, store_block, done_block)
-            .unwrap();
-
+    /// Emit the store block: truncate the char to i8, write it at the current
+    /// index, bump the index, and jump back to the loop header.
+    fn read_line_store(
+        &mut self,
+        buffer: PointerValue<'ctx>,
+        idx_ptr: PointerValue<'ctx>,
+        idx: inkwell::values::IntValue<'ctx>,
+        c: inkwell::values::IntValue<'ctx>,
+        i32_type: inkwell::types::IntType<'ctx>,
+        store_block: inkwell::basic_block::BasicBlock<'ctx>,
+        loop_block: inkwell::basic_block::BasicBlock<'ctx>,
+    ) -> Result<()> {
         self.builder.position_at_end(store_block);
         let c8 = self
             .builder
@@ -312,19 +363,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder
             .build_unconditional_branch(loop_block)
             .unwrap();
-
-        // Null-terminate and continue in the done block.
-        self.builder.position_at_end(done_block);
-        let term_ptr = unsafe {
-            self.builder
-                .build_gep(self.context.i8_type(), buffer, &[idx], "term_ptr")
-                .unwrap()
-        };
-        self.builder
-            .build_store(term_ptr, self.context.i8_type().const_int(0, false))
-            .unwrap();
-
-        Ok(buffer.into())
+        Ok(())
     }
 
     pub(super) fn compile_read_int(&mut self) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
@@ -564,27 +603,8 @@ impl<'ctx> CodeGen<'ctx> {
 
         let malloc_fn = self.module.get_function("malloc").unwrap();
         let strcpy_fn = self.module.get_function("strcpy").unwrap();
-        let strlen_fn = self.module.get_function("strlen").unwrap();
 
-        let mut arg_ptrs = Vec::with_capacity(arguments.len());
-        let mut arg_lens = Vec::with_capacity(arguments.len());
-        for a in arguments {
-            let v = self.compile_expr(a)?;
-            let ptr = if v.is_pointer_value() {
-                v.into_pointer_value()
-            } else {
-                return Err(HuziError::new_global("concat() requires string arguments"));
-            };
-            let len = self
-                .builder
-                .build_call(strlen_fn, &[ptr.into()], "len")
-                .unwrap()
-                .try_as_basic_value()
-                .unwrap_left()
-                .into_int_value();
-            arg_ptrs.push(ptr);
-            arg_lens.push(len);
-        }
+        let (arg_ptrs, arg_lens) = self.concat_string_args(arguments)?;
 
         // Allocate len(args...) + 1 for the null terminator.
         let i32_type = self.context.i32_type();
@@ -607,7 +627,49 @@ impl<'ctx> CodeGen<'ctx> {
             .unwrap_left()
             .into_pointer_value();
 
-        // Copy the first string, then append each remaining one.
+        self.concat_copy_into(buffer, strcpy_fn, &arg_ptrs, &arg_lens)?;
+
+        Ok(buffer.into())
+    }
+
+    /// Evaluate the arguments, which must all be strings; return their
+    /// pointers and strlen lengths.
+    fn concat_string_args(
+        &mut self,
+        arguments: &[Expr],
+    ) -> Result<(Vec<PointerValue<'ctx>>, Vec<inkwell::values::IntValue<'ctx>>)> {
+        let strlen_fn = self.module.get_function("strlen").unwrap();
+
+        let mut arg_ptrs = Vec::with_capacity(arguments.len());
+        let mut arg_lens = Vec::with_capacity(arguments.len());
+        for a in arguments {
+            let v = self.compile_expr(a)?;
+            let ptr = if v.is_pointer_value() {
+                v.into_pointer_value()
+            } else {
+                return Err(HuziError::new_global("concat() requires string arguments"));
+            };
+            let len = self
+                .builder
+                .build_call(strlen_fn, &[ptr.into()], "len")
+                .unwrap()
+                .try_as_basic_value()
+                .unwrap_left()
+                .into_int_value();
+            arg_ptrs.push(ptr);
+            arg_lens.push(len);
+        }
+        Ok((arg_ptrs, arg_lens))
+    }
+
+    /// Copy the first string into `buffer`, then append each remaining one.
+    fn concat_copy_into(
+        &mut self,
+        buffer: PointerValue<'ctx>,
+        strcpy_fn: inkwell::values::FunctionValue<'ctx>,
+        arg_ptrs: &[PointerValue<'ctx>],
+        arg_lens: &[inkwell::values::IntValue<'ctx>],
+    ) -> Result<()> {
         self.builder
             .build_call(strcpy_fn, &[buffer.into(), arg_ptrs[0].into()], "copy")
             .unwrap();
@@ -626,8 +688,7 @@ impl<'ctx> CodeGen<'ctx> {
                 .build_int_add(offset, *len, "offset")
                 .unwrap();
         }
-
-        Ok(buffer.into())
+        Ok(())
     }
 
     pub(super) fn compile_to_string(&mut self, arguments: &[Expr]) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
@@ -635,48 +696,74 @@ impl<'ctx> CodeGen<'ctx> {
             return Err(HuziError::new_global("to_string() requires exactly 1 argument"));
         }
 
-        let malloc_fn = self.module.get_function("malloc").unwrap();
         let sprintf_fn = self.module.get_function("sprintf").unwrap();
 
         let arg = self.compile_expr(&arguments[0])?;
 
-        // Determine format string based on type
-        let format_str = match arg {
-            inkwell::values::BasicValueEnum::IntValue(iv)
-                if iv.get_type().get_bit_width() == 1 =>
-            {
+        // Booleans take a short fixed-size buffer with no format string.
+        if let inkwell::values::BasicValueEnum::IntValue(iv) = arg {
+            if iv.get_type().get_bit_width() == 1 {
                 let s = self.build_bool_str(iv)?;
-                let buffer_size = self.context.i32_type().const_int(8, false);
-                let buffer = self
-                    .builder
-                    .build_call(malloc_fn, &[buffer_size.into()], "str_buffer")
-                    .unwrap()
-                    .try_as_basic_value()
-                    .unwrap_left()
-                    .into_pointer_value();
+                let buffer = self.alloc_str_buffer(8)?;
                 self.builder
-                    .build_call(
-                        sprintf_fn,
-                        &[buffer.into(), s.into()],
-                        "sprintf",
-                    )
+                    .build_call(sprintf_fn, &[buffer.into(), s.into()], "sprintf")
                     .unwrap();
                 return Ok(buffer.into());
             }
+        }
+
+        let (format_ptr, value) = self.to_string_format(arg)?;
+
+        // Allocate buffer (large enough for any double formatting)
+        let buffer = self.alloc_str_buffer(320)?;
+
+        // Call sprintf
+        self.builder
+            .build_call(
+                sprintf_fn,
+                &[buffer.into(), format_ptr.into(), value.into()],
+                "sprintf",
+            )
+            .unwrap();
+
+        Ok(buffer.into())
+    }
+
+    /// Malloc a string buffer of the given size.
+    fn alloc_str_buffer(&mut self, size: u64) -> Result<PointerValue<'ctx>> {
+        let malloc_fn = self.module.get_function("malloc").unwrap();
+        let buffer_size = self.context.i32_type().const_int(size, false);
+        let buffer = self
+            .builder
+            .build_call(malloc_fn, &[buffer_size.into()], "str_buffer")
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_left()
+            .into_pointer_value();
+        Ok(buffer)
+    }
+
+    /// Pick the printf-style format string for `arg` and promote the value
+    /// to match C varargs conventions (chars to i32, floats to double).
+    fn to_string_format(
+        &mut self,
+        arg: inkwell::values::BasicValueEnum<'ctx>,
+    ) -> Result<(PointerValue<'ctx>, inkwell::values::BasicValueEnum<'ctx>)> {
+        match arg {
             inkwell::values::BasicValueEnum::IntValue(iv) => {
                 if iv.get_type().get_bit_width() == 64 {
                     let fmt = unsafe { self.builder.build_global_string("%ld", "fmt_i64").unwrap() };
-                    (fmt, inkwell::values::BasicValueEnum::IntValue(iv))
+                    Ok((fmt.as_pointer_value(), inkwell::values::BasicValueEnum::IntValue(iv)))
                 } else if iv.get_type().get_bit_width() == 8 {
                     let fmt = unsafe { self.builder.build_global_string("%c", "fmt_c").unwrap() };
                     let promoted = self
                         .builder
                         .build_int_z_extend(iv, self.context.i32_type(), "char_promote")
                         .unwrap();
-                    (fmt, inkwell::values::BasicValueEnum::IntValue(promoted))
+                    Ok((fmt.as_pointer_value(), inkwell::values::BasicValueEnum::IntValue(promoted)))
                 } else {
                     let fmt = unsafe { self.builder.build_global_string("%d", "fmt_i32").unwrap() };
-                    (fmt, inkwell::values::BasicValueEnum::IntValue(iv))
+                    Ok((fmt.as_pointer_value(), inkwell::values::BasicValueEnum::IntValue(iv)))
                 }
             }
             inkwell::values::BasicValueEnum::FloatValue(fv) => {
@@ -690,44 +777,18 @@ impl<'ctx> CodeGen<'ctx> {
                 };
                 if fv.get_type() == self.context.f32_type() {
                     let fmt = unsafe { self.builder.build_global_string("%g", "fmt_f32").unwrap() };
-                    (fmt, inkwell::values::BasicValueEnum::FloatValue(f64_val))
+                    Ok((fmt.as_pointer_value(), inkwell::values::BasicValueEnum::FloatValue(f64_val)))
                 } else {
                     let fmt = unsafe { self.builder.build_global_string("%f", "fmt_f64").unwrap() };
-                    (fmt, inkwell::values::BasicValueEnum::FloatValue(f64_val))
+                    Ok((fmt.as_pointer_value(), inkwell::values::BasicValueEnum::FloatValue(f64_val)))
                 }
             }
-            inkwell::values::BasicValueEnum::PointerValue(_) => {
+            _ => {
                 return Err(HuziError::new_global(
                     "to_string() requires a numeric argument",
                 ))
             }
-            _ => {
-                return Err(HuziError::new_global(
-                    "to_string() unsupported type",
-                ))
-            }
-        };
-
-        // Allocate buffer (large enough for any double formatting)
-        let buffer_size = self.context.i32_type().const_int(320, false);
-        let buffer = self
-            .builder
-            .build_call(malloc_fn, &[buffer_size.into()], "str_buffer")
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_left()
-            .into_pointer_value();
-
-        // Call sprintf
-        self.builder
-            .build_call(
-                sprintf_fn,
-                &[buffer.into(), format_str.0.as_pointer_value().into(), format_str.1.into()],
-                "sprintf",
-            )
-            .unwrap();
-
-        Ok(buffer.into())
+        }
     }
 
     // ==================== Struct Functions ====================

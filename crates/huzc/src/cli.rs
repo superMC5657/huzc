@@ -47,6 +47,6 @@ pub struct Args {
     pub output: String,
 
     /// Linker to use (defaults to msvc on Windows, clang on macOS/Linux)
-    #[arg(long, value_enum, default_value_t = LinkerKind::platform_default())]
+    #[arg(short, long, value_enum, default_value_t = LinkerKind::platform_default())]
     pub linker: LinkerKind,
 }
