@@ -20,17 +20,17 @@ pub fn run_command(cmd: &str, args: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
-pub fn link(paths: &OutputPaths, linker: LinkerKind) {
+pub fn link(paths: &OutputPaths, linker: LinkerKind, quiet: bool) {
     match linker {
-        LinkerKind::Msvc => link_msvc(paths),
-        LinkerKind::Clang => link_clang(paths),
-        LinkerKind::Mingw => link_mingw(paths),
+        LinkerKind::Msvc => link_msvc(paths, quiet),
+        LinkerKind::Clang => link_clang(paths, quiet),
+        LinkerKind::Mingw => link_mingw(paths, quiet),
     }
 }
 
 /// Link with lld-link. It auto-detects the MSVC/Windows SDK lib directories,
 /// so no /LIBPATH is needed.
-fn link_msvc(paths: &OutputPaths) {
+fn link_msvc(paths: &OutputPaths, quiet: bool) {
     let lld_args: Vec<String> = vec![
         format!("/OUT:{}", paths.exe_path.to_str().unwrap()),
         "/ENTRY:main".to_string(),
@@ -41,23 +41,27 @@ fn link_msvc(paths: &OutputPaths) {
         paths.obj_path.to_str().unwrap().to_string(),
     ];
     let lld_args_ref: Vec<&str> = lld_args.iter().map(|s| s.as_str()).collect();
-    println!("  lld-link args: {}", lld_args_ref.join(" "));
+    if !quiet {
+        println!("  lld-link args: {}", lld_args_ref.join(" "));
+    }
 
     run_command("lld-link", &lld_args_ref).unwrap_or_else(|e| die(e));
 }
 
 /// Link with the clang driver.
-fn link_clang(paths: &OutputPaths) {
+fn link_clang(paths: &OutputPaths, quiet: bool) {
     let clang_args = clang_link_args(Some(clang_target().as_str()), &paths.exe_path, &paths.obj_path);
     let clang_args_ref: Vec<&str> = clang_args.iter().map(|s| s.as_str()).collect();
-    println!("  clang args: {}", clang_args_ref.join(" "));
+    if !quiet {
+        println!("  clang args: {}", clang_args_ref.join(" "));
+    }
 
     run_command("clang", &clang_args_ref).unwrap_or_else(|e| die(e));
 }
 
 /// Link with MinGW's gcc driver. It provides the mingw-w64 startup files and
 /// links against msvcrt by default, so no extra libs are needed.
-fn link_mingw(paths: &OutputPaths) {
+fn link_mingw(paths: &OutputPaths, quiet: bool) {
     let mut mingw_args: Vec<String> = vec![
         "-o".to_string(),
         paths.exe_path.to_str().unwrap().to_string(),
@@ -68,7 +72,9 @@ fn link_mingw(paths: &OutputPaths) {
         mingw_args.push("-lm".to_string());
     }
     let mingw_args_ref: Vec<&str> = mingw_args.iter().map(|s| s.as_str()).collect();
-    println!("  gcc args: {}", mingw_args_ref.join(" "));
+    if !quiet {
+        println!("  gcc args: {}", mingw_args_ref.join(" "));
+    }
 
     run_command("gcc", &mingw_args_ref).unwrap_or_else(|e| die(e));
 }

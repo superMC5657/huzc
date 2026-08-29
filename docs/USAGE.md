@@ -48,6 +48,7 @@ cargo run --release --bin huzc -- --input examples/hello.hz -o out/hello
 |------|------|------|
 | `--input <file>` | 输入的 .hz 源文件 | `--input hello.hz` |
 | `-o <name>` | 输出文件基础名 (自动添加平台扩展名) | `-o hello` → `hello.exe` (Windows) |
+| `--release` (`-r`) | Release 模式：生成代码前先用 `opt -O2` 优化 LLVM IR，运行速度显著更快；编译过程不打印任何日志（错误仍输出到 stderr）。默认 dev 模式不做 IR 优化并打印编译进度 | `huzc --input main.hz -o main --release` |
 
 ### 输出文件说明
 
@@ -417,8 +418,13 @@ fn main() -> i32 {
     ↓
 [4/5] 验证 (Verify)
     ↓
+[可选] IR 优化 (仅 --release 模式: opt -O2)
+    ↓
 [5/5] 链接 (Linker) → 可执行文件
 ```
+
+> 说明：`cargo build` 的 debug/release 只影响 huzc 编译器自身的编译速度，
+> 不影响它生成的程序。想让生成的程序更快，请使用 `--release` 编译选项。
 
 ## 项目结构
 

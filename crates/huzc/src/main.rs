@@ -22,12 +22,16 @@ pub(crate) fn die(msg: String) -> ! {
 
 fn main() {
     let args = Args::parse();
+    // Release mode runs silently: no progress logs, errors still go to stderr.
+    let quiet = args.release;
 
     let source = read_source(&args.input);
-    let program = parse_source(source);
+    let program = parse_source(source, quiet);
 
     // [3/5] Compiling
-    println!("[3/5] Compiling...");
+    if !quiet {
+        println!("[3/5] Compiling...");
+    }
     let context = Context::create();
     let mut codegen = CodeGen::new(&context, "huzi");
     if let Err(e) = codegen.compile(&program) {
@@ -35,24 +39,38 @@ fn main() {
     }
 
     // [4/5] Verifying
-    println!("[4/5] Verifying...");
+    if !quiet {
+        println!("[4/5] Verifying...");
+    }
     let paths = OutputPaths::new(&args.output);
     write_ir(&codegen, &paths.ll_path);
     if !codegen.verify() {
         die("Error: LLVM module verification failed (this is a compiler bug)".to_string());
     }
 
+    // Release mode: run the LLVM IR optimizer before code generation.
+    // Dev mode passes the raw inkwell IR straight to llc.
+    if args.release {
+        optimize_ir(&paths, quiet);
+    }
+
     // [5/5] Generating executable
-    println!("[5/5] Generating executable...");
+    if !quiet {
+        println!("[5/5] Generating executable...");
+    }
     compile_ir_to_object(&paths);
-    println!("  Linking to executable...");
-    link(&paths, args.linker);
+    if !quiet {
+        println!("  Linking to executable...");
+    }
+    link(&paths, args.linker, quiet);
 
     // Cleanup intermediate files
     let _ = fs::remove_file(&paths.ll_path);
     let _ = fs::remove_file(&paths.obj_path);
 
-    println!("✓ {} generated successfully!", paths.exe_path.display());
+    if !quiet {
+        println!("✓ {} generated successfully!", paths.exe_path.display());
+    }
 }
 
 /// Read the Huzi source file to compile.
@@ -61,13 +79,17 @@ fn read_source(input: &str) -> String {
 }
 
 /// [1/5] Lexing + [2/5] Parsing: turn source text into the program AST.
-fn parse_source(source: String) -> Program {
-    println!("[1/5] Lexing...");
+fn parse_source(source: String, quiet: bool) -> Program {
+    if !quiet {
+        println!("[1/5] Lexing...");
+    }
     let tokens = Lexer::new(source)
         .tokenize()
         .unwrap_or_else(|e| die(format!("Lex error: {}", e)));
 
-    println!("[2/5] Parsing...");
+    if !quiet {
+        println!("[2/5] Parsing...");
+    }
     HuziParser::new(tokens)
         .parse()
         .unwrap_or_else(|e| die(format!("Parse error: {}", e)))
@@ -89,4 +111,19 @@ fn compile_ir_to_object(paths: &OutputPaths) {
         paths.ll_path.to_str().unwrap(),
     ])
     .unwrap_or_else(|e| die(e));
+}
+
+/// Optimize the LLVM IR in place with `opt -O2` (release mode only).
+/// `opt` ships with LLVM alongside `llc`, so no extra toolchain is needed.
+fn optimize_ir(paths: &OutputPaths, quiet: bool) {
+    run_command("opt", &[
+        "-S",
+        "-O2",
+        "-o", paths.ll_path.to_str().unwrap(),
+        paths.ll_path.to_str().unwrap(),
+    ])
+    .unwrap_or_else(|e| die(e));
+    if !quiet {
+        println!("  [opt] -O2 optimization applied");
+    }
 }

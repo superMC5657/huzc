@@ -49,4 +49,9 @@ pub struct Args {
     /// Linker to use (defaults to msvc on Windows, clang on macOS/Linux)
     #[arg(short, long, value_enum, default_value_t = LinkerKind::platform_default())]
     pub linker: LinkerKind,
+
+    /// Release mode: optimize the IR with `opt -O2` before generating code.
+    /// Without this flag (dev mode) the IR is passed to llc unoptimized.
+    #[arg(short = 'r', long)]
+    pub release: bool,
 }
