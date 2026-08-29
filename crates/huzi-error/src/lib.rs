@@ -1,5 +1,11 @@
 use std::fmt;
 
+mod render;
+mod suggest;
+
+pub use render::{render, render_with_color};
+pub use suggest::{did_you_mean, levenshtein};
+
 #[derive(Debug, Clone)]
 pub struct HuziError {
     message: String,
@@ -22,6 +28,20 @@ impl HuziError {
             line: 0,
             column: 0,
         }
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
+    /// 1-based 行号;0 表示无位置信息(全局错误)。
+    pub fn line(&self) -> usize {
+        self.line
+    }
+
+    /// 1-based 列号(按字符计数);行号为 0 时无意义。
+    pub fn column(&self) -> usize {
+        self.column
     }
 }
 

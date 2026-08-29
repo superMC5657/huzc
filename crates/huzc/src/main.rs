@@ -26,7 +26,7 @@ fn main() {
     let quiet = args.release;
 
     let source = read_source(&args.input);
-    let program = parse_source(source, quiet);
+    let program = parse_source(&source, quiet);
 
     // [3/5] Compiling
     if !quiet {
@@ -81,20 +81,22 @@ fn read_source(input: &str) -> String {
 }
 
 /// [1/5] Lexing + [2/5] Parsing: turn source text into the program AST.
-fn parse_source(source: String, quiet: bool) -> Program {
+/// Lex/parse errors carry real line/column positions, so they are rendered
+/// with a source excerpt via huzi-error.
+fn parse_source(source: &str, quiet: bool) -> Program {
     if !quiet {
         println!("[1/5] Lexing...");
     }
-    let tokens = Lexer::new(source)
+    let tokens = Lexer::new(source.to_string())
         .tokenize()
-        .unwrap_or_else(|e| die(format!("Lex error: {}", e)));
+        .unwrap_or_else(|e| die(huzi_error::render(&e, source, "Lex error")));
 
     if !quiet {
         println!("[2/5] Parsing...");
     }
     HuziParser::new(tokens)
         .parse()
-        .unwrap_or_else(|e| die(format!("Parse error: {}", e)))
+        .unwrap_or_else(|e| die(huzi_error::render(&e, source, "Parse error")))
 }
 
 /// Write LLVM IR to disk before verifying so it can be inspected on failure.

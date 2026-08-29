@@ -262,6 +262,38 @@ impl<'ctx> CodeGen<'ctx> {
             .ok_or_else(|| HuziError::new_global("No current function"))
     }
 
+    // ==================== Diagnostics ====================
+
+    /// 收集当前可见的全部名字(函数、结构体、枚举、作用域变量),
+    /// 用于未知名字的 "did you mean" 建议。
+    fn visible_names(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self.functions.keys().map(|s| s.as_str()).collect();
+        names.extend(self.structs.keys().map(|s| s.as_str()));
+        names.extend(self.enums.keys().map(|s| s.as_str()));
+        for scope in &self.scopes {
+            names.extend(scope.keys().map(|s| s.as_str()));
+        }
+        names
+    }
+
+    /// 构造 "Unknown variable" 错误,附最接近名字的修复建议。
+    pub(super) fn unknown_variable_error(&self, name: &str) -> HuziError {
+        let mut message = format!("Unknown variable: {}", name);
+        if let Some(hint) = huzi_error::did_you_mean(name, self.visible_names()) {
+            message.push_str(&format!("\n  help: {}", hint));
+        }
+        HuziError::new_global(message)
+    }
+
+    /// 构造 "Unknown function" 错误,附最接近名字的修复建议。
+    pub(super) fn unknown_function_error(&self, name: &str) -> HuziError {
+        let mut message = format!("Unknown function: {}", name);
+        if let Some(hint) = huzi_error::did_you_mean(name, self.visible_names()) {
+            message.push_str(&format!("\n  help: {}", hint));
+        }
+        HuziError::new_global(message)
+    }
+
     /// True if the current insert block has no terminator yet.
     fn at_open_end(&self) -> bool {
         self.builder

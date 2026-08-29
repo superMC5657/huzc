@@ -562,7 +562,7 @@ impl<'ctx> CodeGen<'ctx> {
         let f = self
             .module
             .get_function(fn_name)
-            .ok_or_else(|| HuziError::new_global(format!("Unknown function: {}", fn_name)))?;
+            .ok_or_else(|| self.unknown_function_error(fn_name))?;
         let arg = self.compile_expr(&arguments[0])?;
         let arg_f64 = self.to_f64(arg, &format!("{}()", fn_name))?;
 

@@ -15,7 +15,7 @@ impl<'ctx> CodeGen<'ctx> {
                         .unwrap();
                     Ok(loaded)
                 }
-                None => Err(HuziError::new_global(format!("Unknown variable: {}", name))),
+                None => Err(self.unknown_variable_error(name)),
             },
             Expr::Binary(bin_expr) => self.compile_binary(bin_expr),
             Expr::Unary(unary_expr) => self.compile_unary(unary_expr),
@@ -368,7 +368,7 @@ impl<'ctx> CodeGen<'ctx> {
             .functions
             .get(&callee_name)
             .cloned()
-            .ok_or_else(|| HuziError::new_global(format!("Unknown function: {}", callee_name)))?;
+            .ok_or_else(|| self.unknown_function_error(&callee_name))?;
 
         if expr.arguments.len() != param_types.len() {
             return Err(HuziError::new_global(format!(
@@ -401,7 +401,7 @@ impl<'ctx> CodeGen<'ctx> {
             Expr::Ident(name) => {
                 let slot = self
                     .scope_lookup(name)
-                    .ok_or_else(|| HuziError::new_global(format!("Unknown variable: {}", name)))?;
+                    .ok_or_else(|| self.unknown_variable_error(name))?;
 
                 if !slot.mutable {
                     return Err(HuziError::new_global(format!(
@@ -458,7 +458,7 @@ impl<'ctx> CodeGen<'ctx> {
             Expr::Ident(name) => {
                 let slot = self
                     .scope_lookup(name)
-                    .ok_or_else(|| HuziError::new_global(format!("Unknown variable: {}", name)))?;
+                    .ok_or_else(|| self.unknown_variable_error(name))?;
                 Ok((slot.ptr, slot.ty))
             }
             Expr::FieldAccess(fa) => {
@@ -568,7 +568,7 @@ impl<'ctx> CodeGen<'ctx> {
             Expr::Ident(name) => {
                 let slot = self
                     .scope_lookup(name)
-                    .ok_or_else(|| HuziError::new_global(format!("Unknown variable: {}", name)))?;
+                    .ok_or_else(|| self.unknown_variable_error(name))?;
                 if !slot.mutable {
                     return Err(HuziError::new_global(format!(
                         "Cannot assign to immutable variable '{}'; declare it with `let mut`",
