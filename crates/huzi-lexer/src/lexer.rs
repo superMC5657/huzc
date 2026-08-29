@@ -57,7 +57,7 @@ impl Lexer {
                 '[' => self.single(Token::LBracket),
                 ']' => self.single(Token::RBracket),
                 ',' => self.single(Token::Comma),
-                ':' => self.single(Token::Colon),
+                ':' => self.read_colon()?,
                 ';' => self.single(Token::Semi),
                 '/' => self.read_slash()?,
                 '+' => self.single(Token::Plus),
@@ -139,6 +139,9 @@ impl Lexer {
 
         let token = match ident.as_str() {
             "fn" => Token::Fn,
+            "struct" => Token::Struct,
+            "enum" => Token::Enum,
+            "match" => Token::Match,
             "let" => Token::Let,
             "mut" => Token::Mut,
             "if" => Token::If,
@@ -303,6 +306,17 @@ impl Lexer {
         }
     }
 
+    fn read_colon(&mut self) -> Result<Token> {
+        self.advance();
+
+        if !self.is_at_end() && self.peek() == ':' {
+            self.advance();
+            Ok(Token::PathSep)
+        } else {
+            Ok(Token::Colon)
+        }
+    }
+
     fn read_slash(&mut self) -> Result<Token> {
         self.advance();
         // `//` comments at token start are already handled by skip_whitespace.
@@ -326,6 +340,9 @@ impl Lexer {
         if !self.is_at_end() && self.peek() == '=' {
             self.advance();
             Ok(Token::EqualEqual)
+        } else if !self.is_at_end() && self.peek() == '>' {
+            self.advance();
+            Ok(Token::FatArrow)
         } else {
             Ok(Token::Equal)
         }

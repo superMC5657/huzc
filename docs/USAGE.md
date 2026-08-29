@@ -119,6 +119,92 @@ print(true)              # 布尔值
 print("x =", x)          # 多参数
 ```
 
+### 5. 结构体
+
+```python
+# 定义结构体
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+# 实例化（必须提供全部字段）
+let p = Point { x: 3, y: 4 }
+
+# 字段访问
+print(p.x, p.y)
+
+# 字段赋值（变量需要 let mut 声明）
+let mut q = Point { x: 0, y: 0 }
+q.x = 10
+
+# 嵌套字段访问
+struct Rect {
+    origin: Point,
+    w: i32,
+    h: i32,
+}
+let rect = Rect { origin: p, w: 100, h: 50 }
+print(rect.origin.x)
+
+# 结构体作为函数参数/返回值（按值传递，赋值时逐字段拷贝）
+fn sum_points(a: Point, b: Point) -> i32 {
+    return a.x + b.x + a.y + b.y
+}
+fn make_point(v: i32) -> Point {
+    return Point { x: v, y: v * 2 }
+}
+
+# 数组中的结构体、结构体的数组字段
+let points = [p, q]
+points[0].x = 99      # points 需要 let mut
+struct Data {
+    nums: [i32; 3],
+    total: i32,
+}
+let data = Data { nums: [1, 2, 3], total: 6 }
+print(data.nums[2], len(data.nums))
+```
+
+限制：结构体不支持自引用/相互嵌套的值循环（`struct A { b: B }` + `struct B { a: A }` 会报编译错误）；`print` 不直接支持整个结构体，需要逐字段打印。
+
+### 6. 枚举与 match
+
+```python
+# 简单枚举（值为判别码，可 == 比较，print 打印为整数）
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+
+# 带数据的枚举（每个变体至多一个 payload）
+enum Shape {
+    Circle(f64),
+    Rect(f64),
+    Point2D,
+}
+
+# 构造变体：Enum::Variant 或 Enum::Variant(payload)
+let c = Color::Green
+let s = Shape::Circle(2.0)
+
+# match 作为表达式，每个分支产出值
+fn area(s: Shape) -> f64 {
+    return match s {
+        Shape::Circle(r) => 3.14159 * r * r,   # r 绑定 payload
+        Shape::Rect(w) => w * w,
+        Shape::Point2D => 0.0,
+        _ => 0.0,                              # 必须有 wildcard 兜底
+    }
+}
+
+print(area(s))          # 12.56636
+print(c == Color::Red)  # false
+```
+
+限制：每个变体至多一个 payload；match 必须包含 `_` 分支（不做穷尽性检查）；带数据的枚举不支持 `==` 比较；`print` 简单枚举输出的是判别码整数。
+
 ## 示例程序
 
 ### Hello World

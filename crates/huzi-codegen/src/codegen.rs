@@ -23,6 +23,39 @@ struct VarSlot<'ctx> {
     mutable: bool,
 }
 
+/// A registered struct field. `ast_ty` keeps the original AST type because
+/// array fields decay to bare pointers in LLVM and would lose their element
+/// type.
+#[derive(Clone)]
+struct StructFieldInfo<'ctx> {
+    name: String,
+    ty: inkwell::types::BasicTypeEnum<'ctx>,
+    ast_ty: Type,
+}
+
+#[derive(Clone)]
+struct EnumVariantInfo<'ctx> {
+    name: String,
+    /// Discriminant value, equal to the variant's declaration index.
+    tag: u32,
+    /// LLVM type of the payload; None for unit variants.
+    payload: Option<inkwell::types::BasicTypeEnum<'ctx>>,
+    /// AST payload type (retains array element types, like StructFieldInfo).
+    ast_payload: Option<Type>,
+    /// Index of this variant's payload inside the payload-union struct.
+    payload_slot: Option<u32>,
+}
+
+#[derive(Clone)]
+struct EnumInfo<'ctx> {
+    name: String,
+    variants: Vec<EnumVariantInfo<'ctx>>,
+    /// Data-carrying enums are laid out as { i32 tag, payload union }. Simple
+    /// enums are represented directly as their i32 tag (None here).
+    llvm: Option<inkwell::types::StructType<'ctx>>,
+    payload_union: Option<inkwell::types::StructType<'ctx>>,
+}
+
 pub struct CodeGen<'ctx> {
     context: &'ctx Context,
     module: Module<'ctx>,
@@ -32,6 +65,16 @@ pub struct CodeGen<'ctx> {
     current_return_type: Option<inkwell::types::BasicTypeEnum<'ctx>>,
     /// (continue_target, break_target) for each enclosing loop.
     loop_stack: Vec<(inkwell::basic_block::BasicBlock<'ctx>, inkwell::basic_block::BasicBlock<'ctx>)>,
+    /// Registered user-defined structs: name -> (LLVM type, ordered fields).
+    structs: HashMap<
+        String,
+        (
+            inkwell::types::StructType<'ctx>,
+            Vec<StructFieldInfo<'ctx>>,
+        ),
+    >,
+    /// Registered user-defined enums: name -> layout info.
+    enums: HashMap<String, EnumInfo<'ctx>>,
 }
 
 impl<'ctx> CodeGen<'ctx> {
@@ -47,11 +90,37 @@ impl<'ctx> CodeGen<'ctx> {
             functions: HashMap::new(),
             current_return_type: None,
             loop_stack: Vec::new(),
+            structs: HashMap::new(),
+            enums: HashMap::new(),
         }
     }
 
     pub fn compile(&mut self, program: &Program) -> Result<()> {
         self.prelude()?;
+
+        // Register all top-level struct/enum definitions before anything else
+        // so function signatures and field types can reference them.
+        let struct_defs: Vec<StructDef> = program
+            .statements
+            .iter()
+            .filter_map(|s| match s {
+                Stmt::Struct(d) => Some(d.clone()),
+                _ => None,
+            })
+            .collect();
+        let enum_defs: Vec<EnumDef> = program
+            .statements
+            .iter()
+            .filter_map(|s| match s {
+                Stmt::Enum(d) => Some(d.clone()),
+                _ => None,
+            })
+            .collect();
+        self.check_type_cycles(&struct_defs, &enum_defs)?;
+        self.register_struct_names(&struct_defs)?;
+        self.register_enum_names(&enum_defs)?;
+        self.resolve_struct_bodies(&struct_defs)?;
+        self.resolve_enum_bodies(&enum_defs)?;
 
         let fn_stmts: Vec<FnStmt> = program
             .statements
@@ -76,7 +145,7 @@ impl<'ctx> CodeGen<'ctx> {
         let top_level: Vec<&Stmt> = program
             .statements
             .iter()
-            .filter(|s| !matches!(s, Stmt::Fn(_)))
+            .filter(|s| !matches!(s, Stmt::Fn(_) | Stmt::Struct(_) | Stmt::Enum(_)))
             .collect();
 
         if has_main {
@@ -113,6 +182,214 @@ impl<'ctx> CodeGen<'ctx> {
         }
 
         Ok(())
+    }
+
+    /// Pass 1 (structs): create opaque named structs so field types can
+    /// reference any other type, including ones defined later.
+    fn register_struct_names(&mut self, defs: &[StructDef]) -> Result<()> {
+        for def in defs {
+            if self.structs.contains_key(&def.name) || self.enums.contains_key(&def.name) {
+                return Err(HuziError::new_global(format!(
+                    "Duplicate type definition: {}",
+                    def.name
+                )));
+            }
+            let st = self.context.opaque_struct_type(&def.name);
+            self.structs.insert(def.name.clone(), (st, Vec::new()));
+        }
+        Ok(())
+    }
+
+    /// Pass 2 (structs): resolve field types and set the bodies.
+    fn resolve_struct_bodies(&mut self, defs: &[StructDef]) -> Result<()> {
+        for def in defs {
+            let mut fields: Vec<StructFieldInfo<'ctx>> = Vec::new();
+            for f in &def.fields {
+                if f.field_type == Type::Named(def.name.clone()) {
+                    return Err(HuziError::new_global(format!(
+                        "Struct '{}' cannot contain itself by value",
+                        def.name
+                    )));
+                }
+                let ty = self.type_to_llvm(&f.field_type)?;
+                if fields.iter().any(|info| info.name == f.name) {
+                    return Err(HuziError::new_global(format!(
+                        "Duplicate field '{}' in struct '{}'",
+                        f.name, def.name
+                    )));
+                }
+                fields.push(StructFieldInfo {
+                    name: f.name.clone(),
+                    ty,
+                    ast_ty: f.field_type.clone(),
+                });
+            }
+
+            let (st, slot) = self.structs.get_mut(&def.name).unwrap();
+            let field_types: Vec<inkwell::types::BasicTypeEnum<'ctx>> =
+                fields.iter().map(|info| info.ty).collect();
+            st.set_body(&field_types, false);
+            *slot = fields;
+        }
+
+        Ok(())
+    }
+
+    /// Reject by-value reference cycles (A -> B -> A) among struct and enum
+    /// definitions, which have no finite layout. Array fields decay to
+    /// pointers so they cannot form one.
+    fn check_type_cycles(&self, structs: &[StructDef], enums: &[EnumDef]) -> Result<()> {
+        let mut names: Vec<&str> = structs.iter().map(|d| d.name.as_str()).collect();
+        names.extend(enums.iter().map(|d| d.name.as_str()));
+
+        let mut refs: HashMap<&str, Vec<&str>> = HashMap::new();
+        for def in structs {
+            let field_types: Vec<&str> = def
+                .fields
+                .iter()
+                .filter_map(|f| match &f.field_type {
+                    Type::Named(n) if names.contains(&n.as_str()) => Some(n.as_str()),
+                    _ => None,
+                })
+                .collect();
+            refs.insert(def.name.as_str(), field_types);
+        }
+        for def in enums {
+            let payload_types: Vec<&str> = def
+                .variants
+                .iter()
+                .filter_map(|v| v.payload.as_ref())
+                .filter_map(|t| match t {
+                    Type::Named(n) if names.contains(&n.as_str()) => Some(n.as_str()),
+                    _ => None,
+                })
+                .collect();
+            refs.insert(def.name.as_str(), payload_types);
+        }
+
+        fn has_cycle(node: &str, refs: &HashMap<&str, Vec<&str>>, path: &mut Vec<String>) -> bool {
+            if path.iter().any(|n| n == node) {
+                return true;
+            }
+            if let Some(children) = refs.get(node) {
+                path.push(node.to_string());
+                for child in children {
+                    if has_cycle(child, refs, path) {
+                        return true;
+                    }
+                }
+                path.pop();
+            }
+            false
+        }
+
+        for def in structs.iter().map(|d| &d.name).chain(enums.iter().map(|d| &d.name)) {
+            if has_cycle(def, &refs, &mut Vec::new()) {
+                return Err(HuziError::new_global(format!(
+                    "Type '{}' is part of a by-value reference cycle",
+                    def
+                )));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Pass 1 (enums): create layouts, inserting placeholders so payloads can
+    /// reference any enum via type_to_llvm regardless of definition order.
+    fn register_enum_names(&mut self, defs: &[EnumDef]) -> Result<()> {
+        for def in defs {
+            if self.structs.contains_key(&def.name) || self.enums.contains_key(&def.name) {
+                return Err(HuziError::new_global(format!(
+                    "Duplicate type definition: {}",
+                    def.name
+                )));
+            }
+
+            let is_data = def.variants.iter().any(|v| v.payload.is_some());
+            let (llvm, payload_union) = if is_data {
+                let union_st = self.context.opaque_struct_type(&format!("{}.payload", def.name));
+                let enum_st = self.context.opaque_struct_type(&def.name);
+                (Some(enum_st), Some(union_st))
+            } else {
+                (None, None)
+            };
+
+            self.enums.insert(
+                def.name.clone(),
+                EnumInfo {
+                    name: def.name.clone(),
+                    variants: Vec::new(),
+                    llvm,
+                    payload_union,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    /// Pass 2 (enums): resolve payload types, set the bodies and variants.
+    fn resolve_enum_bodies(&mut self, defs: &[EnumDef]) -> Result<()> {
+        for def in defs {
+            let mut variants: Vec<EnumVariantInfo<'ctx>> = Vec::new();
+            let mut payload_slot = 0u32;
+            for v in &def.variants {
+                if variants.iter().any(|info| info.name == v.name) {
+                    return Err(HuziError::new_global(format!(
+                        "Duplicate variant '{}' in enum '{}'",
+                        v.name, def.name
+                    )));
+                }
+
+                let (payload, ast_payload, slot) = match &v.payload {
+                    Some(t) => {
+                        let ty = self.type_to_llvm(t)?;
+                        let slot = payload_slot;
+                        payload_slot += 1;
+                        (Some(ty), Some(t.clone()), Some(slot))
+                    }
+                    None => (None, None, None),
+                };
+
+                variants.push(EnumVariantInfo {
+                    name: v.name.clone(),
+                    tag: variants.len() as u32,
+                    payload,
+                    ast_payload,
+                    payload_slot: slot,
+                });
+            }
+
+            let info = self.enums.get_mut(&def.name).unwrap();
+            info.variants = variants;
+
+            if let (Some(enum_st), Some(union_st)) = (info.llvm, info.payload_union) {
+                let payload_types: Vec<inkwell::types::BasicTypeEnum<'ctx>> = info
+                    .variants
+                    .iter()
+                    .filter_map(|v| v.payload)
+                    .collect();
+                union_st.set_body(&payload_types, false);
+                let i32_ty = self.context.i32_type().into();
+                enum_st.set_body(&[i32_ty, union_st.into()], false);
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Find a registered data-carrying enum by its LLVM struct type.
+    fn enum_data_by_type(
+        &self,
+        ty: inkwell::types::BasicTypeEnum<'ctx>,
+    ) -> Option<&EnumInfo<'ctx>> {
+        let st = match ty {
+            inkwell::types::BasicTypeEnum::StructType(st) => st,
+            _ => return None,
+        };
+        self.enums
+            .values()
+            .find(|info| matches!(info.llvm, Some(llvm_st) if llvm_st == st))
     }
 
     fn compile_fn_signature(&mut self, stmt: &FnStmt) -> Result<()> {
@@ -204,6 +481,11 @@ impl<'ctx> CodeGen<'ctx> {
         let fabs_fn = self.context.f64_type().fn_type(&[self.context.f64_type().into()], false);
         self.module.add_function("fabs", fabs_fn, None);
 
+        for name in ["tan", "floor", "ceil", "round"] {
+            let f = self.context.f64_type().fn_type(&[self.context.f64_type().into()], false);
+            self.module.add_function(name, f, None);
+        }
+
         // strlen for string length
         let strlen_fn = self.context.i32_type().fn_type(
             &[self
@@ -273,6 +555,12 @@ impl<'ctx> CodeGen<'ctx> {
     fn compile_stmt(&mut self, stmt: &Stmt) -> Result<()> {
         match stmt {
             Stmt::Let(let_stmt) => self.compile_let(let_stmt),
+            Stmt::Struct(_) => Err(HuziError::new_global(
+                "Struct definitions are only allowed at the top level",
+            )),
+            Stmt::Enum(_) => Err(HuziError::new_global(
+                "Enum definitions are only allowed at the top level",
+            )),
             Stmt::Fn(fn_stmt) => self.compile_fn(fn_stmt),
             Stmt::Expr(expr_stmt) => {
                 self.compile_expr(&expr_stmt.expr)?;
@@ -756,6 +1044,10 @@ impl<'ctx> CodeGen<'ctx> {
             Expr::ArrayIndex(idx_expr) => self.compile_array_index(idx_expr),
             Expr::ArrayLiteral(elements) => self.compile_array_literal(elements),
             Expr::If(if_expr) => self.compile_if_expr(if_expr),
+            Expr::FieldAccess(fa) => self.compile_field_access(fa),
+            Expr::StructLiteral(sl) => self.compile_struct_literal(sl),
+            Expr::EnumConstruct(ec) => self.compile_enum_construct(ec),
+            Expr::Match(m) => self.compile_match_expr(m),
         }
     }
 
@@ -1061,10 +1353,14 @@ impl<'ctx> CodeGen<'ctx> {
             "read_float" => return self.compile_read_float(),
             "len" => return self.compile_len(&expr.arguments),
             "abs" => return self.compile_abs(&expr.arguments),
-            "sqrt" => return self.compile_sqrt(&expr.arguments),
+            "sqrt" => return self.compile_libm_unary("sqrt", &expr.arguments),
             "pow" => return self.compile_pow(&expr.arguments),
-            "sin" => return self.compile_sin(&expr.arguments),
-            "cos" => return self.compile_cos(&expr.arguments),
+            "sin" => return self.compile_libm_unary("sin", &expr.arguments),
+            "cos" => return self.compile_libm_unary("cos", &expr.arguments),
+            "tan" => return self.compile_libm_unary("tan", &expr.arguments),
+            "floor" => return self.compile_libm_unary("floor", &expr.arguments),
+            "ceil" => return self.compile_libm_unary("ceil", &expr.arguments),
+            "round" => return self.compile_libm_unary("round", &expr.arguments),
             "concat" => return self.compile_concat(&expr.arguments),
             "to_string" => return self.compile_to_string(&expr.arguments),
             _ => {}
@@ -1251,6 +1547,7 @@ impl<'ctx> CodeGen<'ctx> {
                 Ok(value)
             }
             Expr::ArrayIndex(idx_expr) => {
+                self.ensure_mutable(&expr.target)?;
                 let array_ptr = self.compile_expr(&idx_expr.array)?;
                 let array_ptr = if array_ptr.is_pointer_value() {
                     array_ptr.into_pointer_value()
@@ -1273,6 +1570,13 @@ impl<'ctx> CodeGen<'ctx> {
                 self.builder.build_store(elem_ptr, value).unwrap();
                 Ok(value)
             }
+            Expr::FieldAccess(_) => {
+                self.ensure_mutable(&expr.target)?;
+                let (field_ptr, field_ty) = self.compile_addr(&expr.target)?;
+                let value = self.coerce_value(field_ty, value)?;
+                self.builder.build_store(field_ptr, value).unwrap();
+                Ok(value)
+            }
             _ => Err(HuziError::new_global("Invalid assignment target")),
         }
     }
@@ -1287,6 +1591,15 @@ impl<'ctx> CodeGen<'ctx> {
             if let Some(slot) = self.scope_lookup(name) {
                 if let Some(elem) = slot.elem {
                     return Ok(elem);
+                }
+            }
+        }
+        if let Expr::FieldAccess(fa) = array_expr {
+            if let Some((_, fields)) = self.struct_def_of_expr(&fa.base) {
+                if let Some(info) = fields.iter().find(|info| info.name == fa.field) {
+                    if let Type::Array(elem, _) = &info.ast_ty {
+                        return self.type_to_llvm(elem);
+                    }
                 }
             }
         }
@@ -1340,7 +1653,20 @@ impl<'ctx> CodeGen<'ctx> {
                 "bool" => Ok(self.context.bool_type().into()),
                 "char" => Ok(self.context.i8_type().into()),
                 "str" => Ok(self.context.ptr_type(AddressSpace::default()).into()),
-                other => Err(HuziError::new_global(format!("Unsupported type: {}", other))),
+                other => {
+                    if let Some((st, _)) = self.structs.get(other) {
+                        return Ok((*st).into());
+                    }
+                    if let Some(info) = self.enums.get(other) {
+                        // Simple enums are their i32 tag; data enums are the
+                        // tagged struct.
+                        return Ok(match info.llvm {
+                            Some(st) => st.into(),
+                            None => self.context.i32_type().into(),
+                        });
+                    }
+                    Err(HuziError::new_global(format!("Unsupported type: {}", other)))
+                }
             },
         }
     }
@@ -1636,6 +1962,17 @@ impl<'ctx> CodeGen<'ctx> {
             }
         }
 
+        // len(s.arr) on a struct array field uses the declared array size.
+        if let Expr::FieldAccess(fa) = &arguments[0] {
+            if let Some((_, fields)) = self.struct_def_of_expr(&fa.base) {
+                if let Some(info) = fields.iter().find(|info| info.name == fa.field) {
+                    if let Type::Array(_, size) = &info.ast_ty {
+                        return Ok(self.context.i32_type().const_int(*size as u64, false).into());
+                    }
+                }
+            }
+        }
+
         let arg = self.compile_expr(&arguments[0])?;
         let arg = if arg.is_pointer_value() {
             arg.into_pointer_value()
@@ -1696,18 +2033,30 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
-    fn compile_sqrt(&mut self, arguments: &[Expr]) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
+    /// Single-argument libm wrappers (sqrt/sin/cos/tan/floor/ceil/round):
+    /// coerce the argument to f64, call the C function, return f64.
+    fn compile_libm_unary(
+        &mut self,
+        fn_name: &str,
+        arguments: &[Expr],
+    ) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
         if arguments.len() != 1 {
-            return Err(HuziError::new_global("sqrt() requires exactly 1 argument"));
+            return Err(HuziError::new_global(format!(
+                "{}() requires exactly 1 argument",
+                fn_name
+            )));
         }
 
-        let sqrt_fn = self.module.get_function("sqrt").unwrap();
+        let f = self
+            .module
+            .get_function(fn_name)
+            .ok_or_else(|| HuziError::new_global(format!("Unknown function: {}", fn_name)))?;
         let arg = self.compile_expr(&arguments[0])?;
-        let arg_f64 = self.to_f64(arg, "sqrt()")?;
+        let arg_f64 = self.to_f64(arg, &format!("{}()", fn_name))?;
 
         let result = self
             .builder
-            .build_call(sqrt_fn, &[arg_f64.into()], "sqrt_result")
+            .build_call(f, &[arg_f64.into()], "libm_result")
             .unwrap()
             .try_as_basic_value()
             .unwrap_left();
@@ -1729,44 +2078,6 @@ impl<'ctx> CodeGen<'ctx> {
         let result = self
             .builder
             .build_call(pow_fn, &[base_f64.into(), exp_f64.into()], "pow_result")
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_left();
-
-        Ok(result)
-    }
-
-    fn compile_sin(&mut self, arguments: &[Expr]) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
-        if arguments.len() != 1 {
-            return Err(HuziError::new_global("sin() requires exactly 1 argument"));
-        }
-
-        let sin_fn = self.module.get_function("sin").unwrap();
-        let arg = self.compile_expr(&arguments[0])?;
-        let arg_f64 = self.to_f64(arg, "sin()")?;
-
-        let result = self
-            .builder
-            .build_call(sin_fn, &[arg_f64.into()], "sin_result")
-            .unwrap()
-            .try_as_basic_value()
-            .unwrap_left();
-
-        Ok(result)
-    }
-
-    fn compile_cos(&mut self, arguments: &[Expr]) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
-        if arguments.len() != 1 {
-            return Err(HuziError::new_global("cos() requires exactly 1 argument"));
-        }
-
-        let cos_fn = self.module.get_function("cos").unwrap();
-        let arg = self.compile_expr(&arguments[0])?;
-        let arg_f64 = self.to_f64(arg, "cos()")?;
-
-        let result = self
-            .builder
-            .build_call(cos_fn, &[arg_f64.into()], "cos_result")
             .unwrap()
             .try_as_basic_value()
             .unwrap_left();
@@ -1973,6 +2284,520 @@ impl<'ctx> CodeGen<'ctx> {
             .unwrap();
 
         Ok(buffer.into())
+    }
+
+    // ==================== Struct Functions ====================
+
+    /// Resolve a field access, array element, or variable to the address of
+    /// its storage together with the type of the value stored there.
+    fn compile_addr(
+        &mut self,
+        expr: &Expr,
+    ) -> Result<(PointerValue<'ctx>, inkwell::types::BasicTypeEnum<'ctx>)> {
+        match expr {
+            Expr::Ident(name) => {
+                let slot = self
+                    .scope_lookup(name)
+                    .ok_or_else(|| HuziError::new_global(format!("Unknown variable: {}", name)))?;
+                Ok((slot.ptr, slot.ty))
+            }
+            Expr::FieldAccess(fa) => {
+                let (base_ptr, base_ty) = self.compile_addr(&fa.base)?;
+                self.gep_field(base_ptr, base_ty, &fa.field)
+            }
+            Expr::ArrayIndex(idx_expr) => {
+                let array_ptr = self.compile_expr(&idx_expr.array)?;
+                let array_ptr = if array_ptr.is_pointer_value() {
+                    array_ptr.into_pointer_value()
+                } else {
+                    return Err(HuziError::new_global("Indexed value is not an array"));
+                };
+
+                let elem_type = self.resolve_elem_type(&idx_expr.array, None)?;
+                let index_val = self.compile_expr(&idx_expr.index)?;
+                let index_i32 = self.coerce_index(index_val)?;
+
+                let elem_ptr = unsafe {
+                    self.builder
+                        .build_gep(elem_type, array_ptr, &[index_i32], "elem_ptr")
+                        .unwrap()
+                };
+                Ok((elem_ptr, elem_type))
+            }
+            _ => {
+                // Rvalue base (e.g. a function call or enum constructor):
+                // spill it to a temporary so it has an address.
+                let value = self.compile_expr(expr)?;
+                let ty = value.get_type();
+                let tmp = self.build_alloca(ty, "rvalue_tmp")?;
+                self.builder.build_store(tmp, value).unwrap();
+                Ok((tmp, ty))
+            }
+        }
+    }
+
+    /// GEP to a named field of the struct value stored at `base_ptr`.
+    fn gep_field(
+        &self,
+        base_ptr: PointerValue<'ctx>,
+        base_ty: inkwell::types::BasicTypeEnum<'ctx>,
+        field: &str,
+    ) -> Result<(PointerValue<'ctx>, inkwell::types::BasicTypeEnum<'ctx>)> {
+        let (_, fields) = self
+            .struct_def_by_type(base_ty)
+            .ok_or_else(|| HuziError::new_global("Value has no fields (not a struct)"))?;
+
+        let (index, info) = fields
+            .iter()
+            .enumerate()
+            .find(|(_, info)| info.name == field)
+            .ok_or_else(|| HuziError::new_global(format!("Struct has no field '{}'", field)))?;
+
+        let field_ptr = self
+            .builder
+            .build_struct_gep(base_ty.into_struct_type(), base_ptr, index as u32, "field_ptr")
+            .unwrap();
+        Ok((field_ptr, info.ty))
+    }
+
+    /// Find a registered struct definition by its LLVM type.
+    fn struct_def_by_type(
+        &self,
+        ty: inkwell::types::BasicTypeEnum<'ctx>,
+    ) -> Option<&(inkwell::types::StructType<'ctx>, Vec<StructFieldInfo<'ctx>>)> {
+        let st = match ty {
+            inkwell::types::BasicTypeEnum::StructType(st) => st,
+            _ => return None,
+        };
+        self.structs.values().find(|(def_st, _)| *def_st == st)
+    }
+
+    /// Best-effort struct definition lookup for an expression, following
+    /// variables and field chains.
+    fn struct_def_of_expr(
+        &self,
+        expr: &Expr,
+    ) -> Option<&(inkwell::types::StructType<'ctx>, Vec<StructFieldInfo<'ctx>>)> {
+        match expr {
+            Expr::Ident(name) => {
+                let slot = self.scope_lookup(name)?;
+                self.struct_def_by_type(slot.ty)
+            }
+            Expr::FieldAccess(fa) => {
+                let (_, fields) = self.struct_def_of_expr(&fa.base)?;
+                let info = fields.iter().find(|info| info.name == fa.field)?;
+                self.struct_def_by_type(info.ty)
+            }
+            _ => None,
+        }
+    }
+
+    /// The root of an lvalue chain must be a mutable variable.
+    fn ensure_mutable(&self, expr: &Expr) -> Result<()> {
+        match expr {
+            Expr::Ident(name) => {
+                let slot = self
+                    .scope_lookup(name)
+                    .ok_or_else(|| HuziError::new_global(format!("Unknown variable: {}", name)))?;
+                if !slot.mutable {
+                    return Err(HuziError::new_global(format!(
+                        "Cannot assign to immutable variable '{}'; declare it with `let mut`",
+                        name
+                    )));
+                }
+                Ok(())
+            }
+            Expr::FieldAccess(fa) => self.ensure_mutable(&fa.base),
+            Expr::ArrayIndex(idx) => self.ensure_mutable(&idx.array),
+            _ => Ok(()),
+        }
+    }
+
+    fn compile_field_access(
+        &mut self,
+        expr: &FieldAccessExpr,
+    ) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
+        let (base_ptr, base_ty) = self.compile_addr(&expr.base)?;
+        let (field_ptr, field_ty) = self.gep_field(base_ptr, base_ty, &expr.field)?;
+        let loaded = self
+            .builder
+            .build_load(field_ty, field_ptr, "field")
+            .unwrap();
+        Ok(loaded)
+    }
+
+    fn compile_struct_literal(
+        &mut self,
+        expr: &StructLiteralExpr,
+    ) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
+        let (struct_ty, fields) = self
+            .structs
+            .get(&expr.name)
+            .cloned()
+            .ok_or_else(|| HuziError::new_global(format!("Unknown struct: {}", expr.name)))?;
+
+        for (i, (name, _)) in expr.fields.iter().enumerate() {
+            if expr.fields[..i].iter().any(|(n, _)| n == name) {
+                return Err(HuziError::new_global(format!(
+                    "Duplicate field '{}' in struct literal",
+                    name
+                )));
+            }
+        }
+        for (name, _) in &expr.fields {
+            if !fields.iter().any(|info| info.name == *name) {
+                return Err(HuziError::new_global(format!(
+                    "Struct '{}' has no field '{}'",
+                    expr.name, name
+                )));
+            }
+        }
+        for info in &fields {
+            if !expr.fields.iter().any(|(n, _)| n == &info.name) {
+                return Err(HuziError::new_global(format!(
+                    "Missing field '{}' in struct literal for '{}'",
+                    info.name, expr.name
+                )));
+            }
+        }
+
+        let tmp = self.build_alloca(struct_ty.into(), "struct_val")?;
+        for (field_name, field_expr) in &expr.fields {
+            let (index, info) = fields
+                .iter()
+                .enumerate()
+                .find(|(_, info)| info.name == *field_name)
+                .unwrap();
+            let value = self.compile_expr(field_expr)?;
+            let value = self.coerce_value(info.ty, value)?;
+            let field_ptr = self
+                .builder
+                .build_struct_gep(struct_ty, tmp, index as u32, "field_ptr")
+                .unwrap();
+            self.builder.build_store(field_ptr, value).unwrap();
+        }
+
+        let loaded = self
+            .builder
+            .build_load(struct_ty, tmp, "struct_load")
+            .unwrap();
+        Ok(loaded)
+    }
+
+    // ==================== Enum Functions ====================
+
+    fn compile_enum_construct(
+        &mut self,
+        expr: &EnumConstructExpr,
+    ) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
+        let info = self
+            .enums
+            .get(&expr.enum_name)
+            .cloned()
+            .ok_or_else(|| HuziError::new_global(format!("Unknown enum: {}", expr.enum_name)))?;
+        let vinfo = info
+            .variants
+            .iter()
+            .find(|v| v.name == expr.variant)
+            .ok_or_else(|| {
+                HuziError::new_global(format!(
+                    "Enum '{}' has no variant '{}'",
+                    expr.enum_name, expr.variant
+                ))
+            })?;
+
+        let enum_st = match info.llvm {
+            None => {
+                // Simple enum: the value is the tag itself.
+                if !expr.args.is_empty() {
+                    return Err(HuziError::new_global(format!(
+                        "Unit variant '{}::{}' takes no arguments",
+                        expr.enum_name, expr.variant
+                    )));
+                }
+                return Ok(self
+                    .context
+                    .i32_type()
+                    .const_int(vinfo.tag as u64, false)
+                    .into());
+            }
+            Some(st) => st,
+        };
+
+        match (&vinfo.payload, expr.args.len()) {
+            (None, 0) => {}
+            (Some(_), 1) => {}
+            (None, _) => {
+                return Err(HuziError::new_global(format!(
+                    "Unit variant '{}::{}' takes no arguments",
+                    expr.enum_name, expr.variant
+                )))
+            }
+            (Some(_), _) => {
+                return Err(HuziError::new_global(format!(
+                    "Variant '{}::{}' expects exactly 1 argument",
+                    expr.enum_name, expr.variant
+                )))
+            }
+        }
+
+        let payload_union = info.payload_union.unwrap();
+        let tmp = self.build_alloca(enum_st.into(), "enum_val")?;
+
+        // Store the discriminant in field 0.
+        let tag_ptr = self
+            .builder
+            .build_struct_gep(enum_st, tmp, 0, "enum_tag_ptr")
+            .unwrap();
+        self.builder
+            .build_store(
+                tag_ptr,
+                self.context.i32_type().const_int(vinfo.tag as u64, false),
+            )
+            .unwrap();
+
+        // Store the payload into the variant's slot of the union in field 1.
+        if let Some(payload_ty) = vinfo.payload {
+            let arg = self.compile_expr(&expr.args[0])?;
+            let arg = self.coerce_value(payload_ty, arg)?;
+            let union_ptr = self
+                .builder
+                .build_struct_gep(enum_st, tmp, 1, "enum_payload_ptr")
+                .unwrap();
+            let slot_ptr = self
+                .builder
+                .build_struct_gep(
+                    payload_union,
+                    union_ptr,
+                    vinfo.payload_slot.unwrap(),
+                    "enum_slot_ptr",
+                )
+                .unwrap();
+            self.builder.build_store(slot_ptr, arg).unwrap();
+        }
+
+        let loaded = self
+            .builder
+            .build_load(enum_st, tmp, "enum_load")
+            .unwrap();
+        Ok(loaded)
+    }
+
+    fn compile_match_expr(
+        &mut self,
+        expr: &MatchExpr,
+    ) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
+        if expr.arms.is_empty() {
+            return Err(HuziError::new_global("match must have at least one arm"));
+        }
+
+        // Address of the scrutinee (rvalues are spilled to a temporary).
+        let (scrut_addr, scrut_ty) = self.compile_addr(&expr.scrutinee)?;
+
+        // The enum being matched, named by the first variant pattern.
+        let pat_enum_name = expr.arms.iter().find_map(|arm| match &arm.pattern {
+            Pattern::Variant { enum_name, .. } => Some(enum_name.as_str()),
+            Pattern::Wildcard => None,
+        });
+
+        // Data-carrying enums keep their tag in field 0 of the struct; simple
+        // enums ARE the i32 tag, so the scrutinee value is the tag itself.
+        if let Some(info) = self.enum_data_by_type(scrut_ty) {
+            if let Some(pat) = pat_enum_name {
+                if pat != info.name {
+                    return Err(HuziError::new_global(format!(
+                        "Match arms use '{}' but the scrutinee is '{}'",
+                        pat, info.name
+                    )));
+                }
+            }
+            let st = info.llvm.unwrap();
+            let info = info.clone();
+            let tag_ptr = self
+                .builder
+                .build_struct_gep(st, scrut_addr, 0, "match_tag_ptr")
+                .unwrap();
+            let tag = self
+                .builder
+                .build_load(self.context.i32_type(), tag_ptr, "match_tag")
+                .unwrap()
+                .into_int_value();
+            return self.compile_match_arms(tag, Some((st, scrut_addr)), Some(&info), &expr.arms);
+        }
+
+        if scrut_ty == self.context.i32_type().into() {
+            let info = match pat_enum_name {
+                Some(name) => {
+                    let info = self.enums.get(name).cloned().ok_or_else(|| {
+                        HuziError::new_global(format!("Unknown enum: {}", name))
+                    })?;
+                    if info.llvm.is_some() {
+                        return Err(HuziError::new_global(format!(
+                            "Cannot match '{}' against a plain i32 scrutinee; it carries data",
+                            name
+                        )));
+                    }
+                    Some(info)
+                }
+                None => None,
+            };
+            let tag = self
+                .builder
+                .build_load(self.context.i32_type(), scrut_addr, "match_tag")
+                .unwrap()
+                .into_int_value();
+            return self.compile_match_arms(tag, None, info.as_ref(), &expr.arms);
+        }
+
+        Err(HuziError::new_global(
+            "match scrutinee must be an enum value",
+        ))
+    }
+
+    /// Compile the arm chain recursively: each variant arm branches on the tag
+    /// and falls through to the remaining arms on mismatch.
+    fn compile_match_arms(
+        &mut self,
+        tag: inkwell::values::IntValue<'ctx>,
+        data: Option<(
+            inkwell::types::StructType<'ctx>,
+            PointerValue<'ctx>,
+        )>,
+        info: Option<&EnumInfo<'ctx>>,
+        arms: &[MatchArm],
+    ) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
+        let (arm, rest) = arms.split_first().ok_or_else(|| {
+            HuziError::new_global("match must have a wildcard arm `_`")
+        })?;
+
+        match &arm.pattern {
+            Pattern::Wildcard => self.compile_block_value(&arm.body),
+            Pattern::Variant {
+                variant, binding, ..
+            } => {
+                let info = info.ok_or_else(|| {
+                    HuziError::new_global("Cannot match variants without a known enum type")
+                })?;
+                let vinfo = info.variants.iter().find(|v| v.name == *variant).ok_or_else(
+                    || {
+                        HuziError::new_global(format!(
+                            "Enum '{}' has no variant '{}'",
+                            info.name, variant
+                        ))
+                    },
+                )?;
+
+                let expected = self
+                    .context
+                    .i32_type()
+                    .const_int(vinfo.tag as u64, false);
+                let cond = self
+                    .builder
+                    .build_int_compare(inkwell::IntPredicate::EQ, tag, expected, "match_cond")
+                    .unwrap();
+
+                let function = self.current_function()?;
+                let then_bb = self.context.append_basic_block(function, "match_arm");
+                let else_bb = self.context.append_basic_block(function, "match_next");
+                let merge_bb = self.context.append_basic_block(function, "match_merge");
+                self.builder
+                    .build_conditional_branch(cond, then_bb, else_bb)
+                    .unwrap();
+
+                // Matching arm: optionally bind the payload, evaluate the body.
+                self.builder.position_at_end(then_bb);
+                if let Some(bname) = binding {
+                    self.bind_match_payload(data, info, vinfo, bname)?;
+                }
+                let then_val = self.compile_block_value(&arm.body)?;
+                if binding.is_some() {
+                    self.pop_scope();
+                }
+                let result_ty = then_val.get_type();
+                let result_ptr = self.build_alloca(result_ty, "match_val")?;
+                self.builder.build_store(result_ptr, then_val).unwrap();
+                self.builder
+                    .build_unconditional_branch(merge_bb)
+                    .unwrap();
+
+                // Remaining arms run when the tag does not match.
+                self.builder.position_at_end(else_bb);
+                let else_val = self.compile_match_arms(tag, data, Some(info), rest)?;
+                let else_val = self.coerce_value(result_ty, else_val)?;
+                self.builder.build_store(result_ptr, else_val).unwrap();
+                self.builder
+                    .build_unconditional_branch(merge_bb)
+                    .unwrap();
+
+                self.builder.position_at_end(merge_bb);
+                let result = self
+                    .builder
+                    .build_load(result_ty, result_ptr, "match_load")
+                    .unwrap();
+                Ok(result)
+            }
+        }
+    }
+
+    /// Enter a scope with the pattern binding bound to the variant's payload.
+    fn bind_match_payload(
+        &mut self,
+        data: Option<(inkwell::types::StructType<'ctx>, PointerValue<'ctx>)>,
+        info: &EnumInfo<'ctx>,
+        vinfo: &EnumVariantInfo<'ctx>,
+        binding: &str,
+    ) -> Result<()> {
+        let (enum_st, scrut_addr) = data.ok_or_else(|| {
+            HuziError::new_global(format!(
+                "Variant '{}::{}' has no payload to bind",
+                info.name, vinfo.name
+            ))
+        })?;
+        let payload_ty = vinfo.payload.ok_or_else(|| {
+            HuziError::new_global(format!(
+                "Variant '{}::{}' has no payload to bind",
+                info.name, vinfo.name
+            ))
+        })?;
+
+        let union_st = info.payload_union.unwrap();
+        let union_ptr = self
+            .builder
+            .build_struct_gep(enum_st, scrut_addr, 1, "bind_payload_ptr")
+            .unwrap();
+        let slot_ptr = self
+            .builder
+            .build_struct_gep(
+                union_st,
+                union_ptr,
+                vinfo.payload_slot.unwrap(),
+                "bind_slot_ptr",
+            )
+            .unwrap();
+
+        // Arrays decay to pointers; keep the element type for indexing.
+        let elem = match &vinfo.ast_payload {
+            Some(Type::Array(elem_ty, _)) => Some(self.type_to_llvm(elem_ty)?),
+            Some(Type::Str) => Some(self.context.i8_type().into()),
+            _ => None,
+        };
+        let array_len = match &vinfo.ast_payload {
+            Some(Type::Array(_, size)) => Some(*size as u32),
+            _ => None,
+        };
+
+        self.push_scope();
+        self.scope_insert(
+            binding.to_string(),
+            VarSlot {
+                ptr: slot_ptr,
+                ty: payload_ty,
+                elem,
+                array_len,
+                mutable: false,
+            },
+        );
+        Ok(())
     }
 
     // ==================== Array Functions ====================

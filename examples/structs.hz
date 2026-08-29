@@ -1,0 +1,67 @@
+# 结构体示例
+# 演示结构体定义、实例化、字段访问与字段赋值
+
+struct Point {
+    x: i32,
+    y: i32,
+}
+
+struct Rect {
+    origin: Point,
+    w: i32,
+    h: i32,
+}
+
+# 结构体作为函数参数
+fn sum_points(a: Point, b: Point) -> i32 {
+    return (a.x + b.x) + (a.y + b.y)
+}
+
+# 结构体作为返回值
+fn make_point(v: i32) -> Point {
+    return Point { x: v, y: v * 2 }
+}
+
+fn main() -> i32 {
+    # 实例化与字段读取
+    let p = Point { x: 3, y: 4 }
+    print("p.x =", p.x, "p.y =", p.y)
+
+    # 字段赋值（需要 let mut）
+    let mut q = Point { x: 0, y: 0 }
+    q.x = 10
+    q.y = 20
+    print("q:", q.x, q.y)
+
+    # 不可变结构体的字段赋值应在编译期报错（此处不执行）
+    # let fixed = Point { x: 1, y: 2 }
+    # fixed.x = 5
+
+    # 函数传参 / 返回结构体
+    print("sum_points:", sum_points(p, q))
+    let r = make_point(7)
+    print("r:", r.x, r.y)
+
+    # 嵌套结构体
+    let rect = Rect { origin: p, w: 100, h: 50 }
+    print("rect.origin.x =", rect.origin.x, "rect.origin.y =", rect.origin.y)
+    let mut rect2 = Rect { origin: q, w: 1, h: 1 }
+    rect2.origin.x = 99
+    print("rect2.origin.x =", rect2.origin.x)
+
+    # 数组中的结构体
+    let mut points = [p, q, r]
+    points[1].x = 55
+    print("points[1].x =", points[1].x, "points[2].y =", points[2].y)
+
+    # 结构体数组字段
+    let data = Data { nums: [1, 2, 3], total: 6 }
+    print("data.nums[2] =", data.nums[2], "len =", len(data.nums))
+
+    return 0
+}
+
+struct Data {
+    nums: [i32; 3],
+    total: i32,
+}

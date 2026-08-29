@@ -27,6 +27,10 @@ impl Parser {
     fn parse_statement(&mut self) -> Result<Stmt> {
         if self.check_keyword(&[Token::Let]) {
             self.parse_let_statement()
+        } else if self.check_keyword(&[Token::Struct]) {
+            self.parse_struct_statement()
+        } else if self.check_keyword(&[Token::Enum]) {
+            self.parse_enum_statement()
         } else if self.check_keyword(&[Token::Fn]) {
             self.parse_fn_statement()
         } else if self.check_keyword(&[Token::Return]) {
@@ -82,6 +86,81 @@ impl Parser {
             type_annotation,
             value,
         }))
+    }
+
+    fn parse_struct_statement(&mut self) -> Result<Stmt> {
+        self.advance();
+
+        let name = self.expect_ident("Expected struct name")?;
+
+        self.expect(&Token::LBrace, "Expected '{' after struct name")?;
+
+        let mut fields = Vec::new();
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            let field_name = self.expect_ident("Expected field name")?;
+
+            self.expect(&Token::Colon, "Expected ':' after field name")?;
+            let field_type = self.parse_type()?;
+
+            fields.push(StructField {
+                name: field_name,
+                field_type,
+            });
+
+            if self.check(&Token::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        self.expect(&Token::RBrace, "Expected '}' after struct fields")?;
+
+        Ok(Stmt::Struct(StructDef { name, fields }))
+    }
+
+    fn parse_enum_statement(&mut self) -> Result<Stmt> {
+        self.advance();
+
+        let name = self.expect_ident("Expected enum name")?;
+
+        self.expect(&Token::LBrace, "Expected '{' after enum name")?;
+
+        let mut variants = Vec::new();
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            let variant_name = self.expect_ident("Expected variant name")?;
+
+            let payload = if self.check(&Token::LParen) {
+                self.advance();
+                let payload_type = self.parse_type()?;
+                if self.check(&Token::Comma) {
+                    return Err(HuziError::new(
+                        "Multiple payload values per variant are not supported",
+                        self.current_line(),
+                        self.current_col(),
+                    ));
+                }
+                self.expect(&Token::RParen, "Expected ')' after variant payload type")?;
+                Some(payload_type)
+            } else {
+                None
+            };
+
+            variants.push(EnumVariant {
+                name: variant_name,
+                payload,
+            });
+
+            if self.check(&Token::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        self.expect(&Token::RBrace, "Expected '}' after enum variants")?;
+
+        Ok(Stmt::Enum(EnumDef { name, variants }))
     }
 
     fn parse_fn_statement(&mut self) -> Result<Stmt> {
@@ -248,7 +327,7 @@ impl Parser {
 
         if self.check(&Token::Equal) {
             let target = match &expr {
-                Expr::Ident(_) | Expr::ArrayIndex(_) => expr,
+                Expr::Ident(_) | Expr::ArrayIndex(_) | Expr::FieldAccess(_) => expr,
                 _ => {
                     return Err(HuziError::new(
                         "Invalid assignment target",
@@ -417,36 +496,45 @@ impl Parser {
     fn parse_call_expression(&mut self) -> Result<Expr> {
         let mut expr = self.parse_primary_expression()?;
 
-        // Parse array index: expr[index]
-        while self.check(&Token::LBracket) {
-            self.advance(); // consume '['
-            let index = self.parse_expression()?;
-            self.expect(&Token::RBracket, "Expected ']' after index")?;
-            expr = Expr::ArrayIndex(ArrayIndexExpr {
-                array: Box::new(expr),
-                index: Box::new(index),
-            });
-        }
+        // Postfix operations can chain and interleave: points[1].x, p.vals[0],
+        // f(a).field, ...
+        loop {
+            if self.check(&Token::LBracket) {
+                self.advance(); // consume '['
+                let index = self.parse_expression()?;
+                self.expect(&Token::RBracket, "Expected ']' after index")?;
+                expr = Expr::ArrayIndex(ArrayIndexExpr {
+                    array: Box::new(expr),
+                    index: Box::new(index),
+                });
+            } else if self.check(&Token::Dot) {
+                self.advance();
+                let field = self.expect_ident("Expected field name after '.'")?;
+                expr = Expr::FieldAccess(FieldAccessExpr {
+                    base: Box::new(expr),
+                    field,
+                });
+            } else if self.check(&Token::LParen) {
+                self.advance();
 
-        // Parse function call: expr(args)
-        while self.check(&Token::LParen) {
-            self.advance();
+                let mut arguments = Vec::new();
+                while !self.check(&Token::RParen) && !self.is_at_end() {
+                    arguments.push(self.parse_expression()?);
 
-            let mut arguments = Vec::new();
-            while !self.check(&Token::RParen) && !self.is_at_end() {
-                arguments.push(self.parse_expression()?);
-
-                if self.check(&Token::Comma) {
-                    self.advance();
+                    if self.check(&Token::Comma) {
+                        self.advance();
+                    }
                 }
+
+                self.expect(&Token::RParen, "Expected ')' after arguments")?;
+
+                expr = Expr::Call(CallExpr {
+                    callee: Box::new(expr),
+                    arguments,
+                });
+            } else {
+                break;
             }
-
-            self.expect(&Token::RParen, "Expected ')' after arguments")?;
-
-            expr = Expr::Call(CallExpr {
-                callee: Box::new(expr),
-                arguments,
-            });
         }
 
         Ok(expr)
@@ -482,6 +570,35 @@ impl Parser {
             }
             Token::Ident(name) => {
                 self.advance();
+                // `Enum::Variant` / `Enum::Variant(args)` — variant construction.
+                if self.check(&Token::PathSep) {
+                    self.advance();
+                    let variant = self.expect_ident("Expected variant name after '::'")?;
+                    let args = if self.check(&Token::LParen) {
+                        self.advance();
+                        let mut args = Vec::new();
+                        while !self.check(&Token::RParen) && !self.is_at_end() {
+                            args.push(self.parse_expression()?);
+                            if self.check(&Token::Comma) {
+                                self.advance();
+                            }
+                        }
+                        self.expect(&Token::RParen, "Expected ')' after variant arguments")?;
+                        args
+                    } else {
+                        Vec::new()
+                    };
+                    return Ok(Expr::EnumConstruct(EnumConstructExpr {
+                        enum_name: name,
+                        variant,
+                        args,
+                    }));
+                }
+                // `Point { x: 1, ... }` — a struct literal, recognized only when
+                // `{` is followed by `field:`, so bare blocks still parse.
+                if self.check(&Token::LBrace) && self.looks_like_struct_literal() {
+                    return self.parse_struct_literal(&name);
+                }
                 Ok(Expr::Ident(name))
             }
             Token::LParen => {
@@ -508,6 +625,7 @@ impl Parser {
                 Ok(Expr::ArrayLiteral(elements))
             }
             Token::If => self.parse_if_expression(),
+            Token::Match => self.parse_match_expression(),
             _ => Err(HuziError::new(
                 format!("Unexpected token: {}", token),
                 self.current_line(),
@@ -516,6 +634,110 @@ impl Parser {
         }
     }
 
+
+    /// True if the upcoming tokens look like `{ field: ...` — the shape of a
+    /// struct literal body (a bare block cannot start with `ident :`).
+    fn looks_like_struct_literal(&self) -> bool {
+        matches!(self.peek_at(1), Some(Token::Ident(_))) && matches!(self.peek_at(2), Some(Token::Colon))
+    }
+
+    /// Parse `{ field: expr, ... }` after the struct name was consumed.
+    fn parse_struct_literal(&mut self, name: &str) -> Result<Expr> {
+        self.expect(&Token::LBrace, "Expected '{' in struct literal")?;
+
+        let mut fields = Vec::new();
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            let field_name = self.expect_ident("Expected field name in struct literal")?;
+
+            self.expect(&Token::Colon, "Expected ':' after field name in struct literal")?;
+            let value = self.parse_expression()?;
+
+            fields.push((field_name, value));
+
+            if self.check(&Token::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        self.expect(&Token::RBrace, "Expected '}' after struct literal fields")?;
+
+        Ok(Expr::StructLiteral(StructLiteralExpr {
+            name: name.to_string(),
+            fields,
+        }))
+    }
+
+    /// `match expr { pattern => body, ... }` — each arm body is a block or a
+    /// single expression.
+    fn parse_match_expression(&mut self) -> Result<Expr> {
+        self.advance();
+        let scrutinee = self.parse_expression()?;
+
+        self.expect(&Token::LBrace, "Expected '{' after match scrutinee")?;
+
+        let mut arms = Vec::new();
+        while !self.check(&Token::RBrace) && !self.is_at_end() {
+            let pattern = self.parse_pattern()?;
+
+            self.expect(&Token::FatArrow, "Expected '=>' after match pattern")?;
+
+            let body = if self.check(&Token::LBrace) {
+                self.parse_block()?
+            } else {
+                let expr = self.parse_expression()?;
+                Block {
+                    statements: vec![Stmt::Expr(ExprStmt { expr })],
+                }
+            };
+
+            arms.push(MatchArm { pattern, body });
+
+            if self.check(&Token::Comma) {
+                self.advance();
+            }
+        }
+
+        self.expect(&Token::RBrace, "Expected '}' after match arms")?;
+
+        Ok(Expr::Match(MatchExpr {
+            scrutinee: Box::new(scrutinee),
+            arms,
+        }))
+    }
+
+    /// `Enum::Variant`, `Enum::Variant(binding)`, or `_`.
+    fn parse_pattern(&mut self) -> Result<Pattern> {
+        // Note: `check` matches any Ident against Token::Ident, so the
+        // wildcard must be detected by comparing the actual name.
+        if let Token::Ident(name) = self.peek() {
+            if name == "_" {
+                self.advance();
+                return Ok(Pattern::Wildcard);
+            }
+        }
+
+        let enum_name = self.expect_ident("Expected pattern (variant or '_')")?;
+
+        self.expect(&Token::PathSep, "Expected '::' after enum name in pattern")?;
+        let variant = self.expect_ident("Expected variant name after '::'")?;
+
+        let binding = if self.check(&Token::LParen) {
+            self.advance();
+            let binding = self.expect_ident("Expected binding name in pattern")?;
+            self.expect(&Token::RParen, "Expected ')' after pattern binding")?;
+            Some(binding)
+        } else {
+            None
+        };
+
+        Ok(Pattern::Variant {
+            enum_name,
+            variant,
+            binding,
+        })
+    }
 
     /// If used as an expression: `let m = if c { a } else { b }`, with
     /// `elif` chains folded into a nested expression.
@@ -581,6 +803,7 @@ impl Parser {
                 | Token::LParen
                 | Token::LBracket
                 | Token::If
+                | Token::Match
                 | Token::Bang
                 | Token::Minus
         )
@@ -613,6 +836,10 @@ impl Parser {
 
     fn peek(&self) -> &Token {
         &self.tokens[self.pos].token
+    }
+
+    fn peek_at(&self, offset: usize) -> Option<&Token> {
+        self.tokens.get(self.pos + offset).map(|t| &t.token)
     }
 
     fn current_line(&self) -> usize {

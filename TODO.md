@@ -64,8 +64,8 @@ huzc/
 - [x] `sqrt(x)` - 平方根
 - [x] `pow(x, n)` - 幂运算
 - [x] `sin(x)`, `cos(x)` - 三角函数
-- [ ] `tan(x)` - 三角函数
-- [ ] `floor(x)`, `ceil(x)`, `round(x)` - 取整函数
+- [x] `tan(x)` - 三角函数
+- [x] `floor(x)`, `ceil(x)`, `round(x)` - 取整函数
 
 ---
 
@@ -78,14 +78,16 @@ huzc/
 - [ ] 元组 `(1, "hello", true)`
 
 #### 7. 结构体
-- [ ] 结构体定义 `struct Point { x: i32, y: i32 }`
-- [ ] 结构体实例化 `let p = Point { x: 1, y: 2 }`
-- [ ] 字段访问 `p.x`
+- [x] 结构体定义 `struct Point { x: i32, y: i32 }`
+- [x] 结构体实例化 `let p = Point { x: 1, y: 2 }`
+- [x] 字段访问 `p.x`
+- [x] 字段赋值 `p.x = 5`（受 `let mut` 约束）、嵌套字段 `a.b.x`、函数传参/返回结构体（按值语义）、数组元素字段 `arr[0].x`、结构体数组字段（见 examples/structs.hz）
 
 #### 8. 枚举
-- [ ] 枚举定义 `enum Color { Red, Green, Blue }`
-- [ ] 枚举带数据 `enum Result { Ok(i32), Err(str) }`
-- [ ] match 表达式
+- [x] 枚举定义 `enum Color { Red, Green, Blue }`
+- [x] 枚举带数据 `enum Result { Ok(i32), Err(str) }`
+- [x] match 表达式（变体模式、payload 绑定、`_` 通配符；要求 wildcard 兜底）
+- [x] 变体引用 `Color::Red` / 构造 `Result::Ok(42)`（`::` 路径语法，见 examples/enums.hz）
 
 #### 9. 模块系统
 - [ ] import 语句
@@ -148,7 +150,7 @@ huzc/
 2. **print 函数完善** → ✅ 已完成
 3. **标准库函数** → ✅ 已完成 (read_*, len, concat (可变参数), to_string, math 函数)
 4. **类型验证** → ✅ 已完成 (基础版)
-5. **结构体/枚举** → 待开发
+5. **结构体/枚举** → ✅ 已完成 (结构体 2026-08-29，枚举+match 2026-08-29)
 6. **错误改进/调试** → 待开发 (错误定位已修复)
 
 ---

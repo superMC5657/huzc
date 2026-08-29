@@ -1,0 +1,79 @@
+# 枚举与 match 示例
+# 演示简单枚举、带数据枚举、match 表达式与 payload 绑定
+
+enum Color {
+    Red,
+    Green,
+    Blue,
+}
+
+enum Shape {
+    Circle(f64),
+    Rect(f64),
+    Point2D,
+}
+
+struct Tagged {
+    color: Color,
+    shape: Shape,
+}
+
+fn describe(c: Color) -> str {
+    return match c {
+        Color::Red => "red",
+        Color::Green => "green",
+        Color::Blue => "blue",
+        _ => "unknown",
+    }
+}
+
+# match 作为表达式求值
+fn area(s: Shape) -> f64 {
+    return match s {
+        Shape::Circle(r) => 3.14159 * r * r,
+        Shape::Rect(w) => w * w,
+        Shape::Point2D => 0.0,
+        _ => 0.0,
+    }
+}
+
+fn main() -> i32 {
+    # 简单枚举：值为判别码
+    let c = Color::Green
+    print("color:", describe(c))
+
+    # 带数据枚举：payload 绑定
+    let r = Shape::Circle(2.0)
+    print("circle area:", area(r))
+    let s = Shape::Rect(3.0)
+    print("rect area:", area(s))
+    let p = Shape::Point2D
+    print("point area:", area(p))
+
+    # match 内联使用
+    let msg = match Color::Red {
+        Color::Red => "it is red",
+        _ => "not red",
+    }
+    print(msg)
+
+    # 结构体中的枚举字段
+    let tagged = Tagged { color: Color::Blue, shape: Shape::Circle(1.0) }
+    print("tagged:", describe(tagged.color), area(tagged.shape))
+
+    # 数组中的枚举
+    let colors = [Color::Red, Color::Blue, Color::Green]
+    let mut i = 0
+    while i < 3 {
+        print(i, describe(colors[i]))
+        i = i + 1
+    }
+
+    # 新数学函数
+    print("tan(0) =", tan(0.0))
+    print("floor(2.7) =", floor(2.7))
+    print("ceil(2.1) =", ceil(2.1))
+    print("round(2.5) =", round(2.5))
+
+    return 0
+}

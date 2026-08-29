@@ -4,6 +4,9 @@ use std::fmt;
 pub enum Token {
     // Keywords
     Fn,
+    Struct,
+    Enum,
+    Match,
     Let,
     Mut,
     If,
@@ -51,8 +54,10 @@ pub enum Token {
     RBracket,
     Comma,
     Colon,
+    PathSep,
     Semi,
     Arrow,
+    FatArrow,
     Dot,
     DotDot,
 

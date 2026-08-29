@@ -43,6 +43,8 @@ pub struct Program {
 #[derive(Debug, Clone)]
 pub enum Stmt {
     Let(LetStmt),
+    Struct(StructDef),
+    Enum(EnumDef),
     Fn(FnStmt),
     Expr(ExprStmt),
     Return(ReturnStmt),
@@ -74,6 +76,31 @@ pub struct FnStmt {
 pub struct FnParam {
     pub name: String,
     pub param_type: Type,
+}
+
+#[derive(Debug, Clone)]
+pub struct StructDef {
+    pub name: String,
+    pub fields: Vec<StructField>,
+}
+
+#[derive(Debug, Clone)]
+pub struct StructField {
+    pub name: String,
+    pub field_type: Type,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnumDef {
+    pub name: String,
+    pub variants: Vec<EnumVariant>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EnumVariant {
+    pub name: String,
+    /// Optional payload type: `Ok(i32)` has one, `Red` has none.
+    pub payload: Option<Type>,
 }
 
 #[derive(Debug, Clone)]
@@ -124,6 +151,57 @@ pub enum Expr {
     ArrayIndex(ArrayIndexExpr),
     ArrayLiteral(Vec<Expr>),
     If(IfExpr),
+    FieldAccess(FieldAccessExpr),
+    StructLiteral(StructLiteralExpr),
+    EnumConstruct(EnumConstructExpr),
+    Match(MatchExpr),
+}
+
+/// Enum variant construction: `Color::Red` or `Result::Ok(42)`
+#[derive(Debug, Clone)]
+pub struct EnumConstructExpr {
+    pub enum_name: String,
+    pub variant: String,
+    pub args: Vec<Expr>,
+}
+
+/// `match scrutinee { pattern => body, ... }` used as an expression.
+#[derive(Debug, Clone)]
+pub struct MatchExpr {
+    pub scrutinee: Box<Expr>,
+    pub arms: Vec<MatchArm>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MatchArm {
+    pub pattern: Pattern,
+    pub body: Block,
+}
+
+#[derive(Debug, Clone)]
+pub enum Pattern {
+    /// `Enum::Variant` or `Enum::Variant(binding)` — binds the payload to a
+    /// variable inside the arm body.
+    Variant {
+        enum_name: String,
+        variant: String,
+        binding: Option<String>,
+    },
+    /// `_` — matches anything.
+    Wildcard,
+}
+
+#[derive(Debug, Clone)]
+pub struct FieldAccessExpr {
+    pub base: Box<Expr>,
+    pub field: String,
+}
+
+/// Struct instantiation: `Point { x: 1, y: 2 }`
+#[derive(Debug, Clone)]
+pub struct StructLiteralExpr {
+    pub name: String,
+    pub fields: Vec<(String, Expr)>,
 }
 
 /// If used as an expression: `let m = if cond { a } else { b }`
