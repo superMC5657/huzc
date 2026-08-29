@@ -13,6 +13,8 @@ mod aggregates;
 mod builtins;
 mod expr;
 mod stmt;
+#[cfg(test)]
+mod tests;
 mod tuples;
 mod types;
 

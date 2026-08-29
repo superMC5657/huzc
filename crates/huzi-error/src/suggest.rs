@@ -45,3 +45,40 @@ where
     }
     best.map(|(_, candidate)| format!("did you mean `{}`?", candidate))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn levenshtein_counts_edits() {
+        assert_eq!(levenshtein("", ""), 0);
+        assert_eq!(levenshtein("abc", "abc"), 0);
+        assert_eq!(levenshtein("cont", "count"), 1);
+        assert_eq!(levenshtein("helo", "hello"), 1);
+        assert_eq!(levenshtein("kitten", "sitting"), 3);
+    }
+
+    #[test]
+    fn suggests_the_closest_candidate() {
+        let candidates = ["count", "cost", "main"];
+        assert_eq!(
+            did_you_mean("cont", candidates),
+            Some("did you mean `count`?".to_string())
+        );
+    }
+
+    #[test]
+    fn case_insensitive_match_wins() {
+        assert_eq!(
+            did_you_mean("PRINT", ["print", "printer"]),
+            Some("did you mean `print`?".to_string())
+        );
+    }
+
+    #[test]
+    fn distant_names_get_no_suggestion() {
+        assert_eq!(did_you_mean("zzzqqq", ["count", "main"]), None);
+        assert_eq!(did_you_mean("count", ["count", "main"]), None);
+    }
+}

@@ -1,5 +1,7 @@
 mod literals;
 mod operators;
+#[cfg(test)]
+mod tests;
 
 use crate::token::{SpannedToken, Token};
 use huzi_error::Result;

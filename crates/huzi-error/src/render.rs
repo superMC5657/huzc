@@ -54,3 +54,44 @@ fn colorize(text: &str, color: bool) -> String {
         text.to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn renders_source_excerpt_with_caret() {
+        let error = HuziError::new("Unexpected token", 2, 5);
+        let output = render_with_color(&error, "let a = 1;\nlet b = 2;\n", "Parse error", false);
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!(lines[0], "Parse error at line 2, column 5: Unexpected token");
+        assert_eq!(lines[1], "  |");
+        assert_eq!(lines[2], "2 | let b = 2;");
+        assert_eq!(lines[3], "  |     ^");
+    }
+
+    #[test]
+    fn colored_output_wraps_header_in_ansi() {
+        let error = HuziError::new("boom", 1, 1);
+        let output = render_with_color(&error, "x", "Lex error", true);
+        assert!(output.contains("\x1b[1;31mLex error at line 1, column 1: boom\x1b[0m"));
+        assert!(output.contains("\x1b[1;31m^\x1b[0m"));
+    }
+
+    #[test]
+    fn global_errors_stay_single_line() {
+        let error = HuziError::new_global("no position");
+        let output = render_with_color(&error, "x", "Compile error", false);
+        assert_eq!(output, "Compile error: no position");
+    }
+
+    #[test]
+    fn out_of_range_line_falls_back_to_plain_format() {
+        let error = HuziError::new("beyond eof", 9, 1);
+        let output = render_with_color(&error, "x", "Parse error", false);
+        assert_eq!(
+            output,
+            "Parse error: Error at line 9, column 1: beyond eof"
+        );
+    }
+}

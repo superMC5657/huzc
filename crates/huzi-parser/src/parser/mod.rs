@@ -1,6 +1,8 @@
 mod expr;
 mod pattern;
 mod stmt;
+#[cfg(test)]
+mod tests;
 
 use huzi_ast::*;
 use huzi_error::HuziError;
