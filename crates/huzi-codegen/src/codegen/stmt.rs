@@ -162,6 +162,11 @@ impl<'ctx> CodeGen<'ctx> {
         let entry = self.context.append_basic_block(function, "entry");
         self.builder.position_at_end(entry);
 
+        // The program entry point sets up UTF-8 console output first.
+        if stmt.name == "main" {
+            self.emit_console_utf8_setup();
+        }
+
         let return_type = match &stmt.return_type {
             Some(t) => self.type_to_llvm(t)?,
             None => self.context.i32_type().into(),

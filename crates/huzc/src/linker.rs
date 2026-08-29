@@ -37,6 +37,7 @@ fn link_msvc(paths: &OutputPaths) {
         "/DEFAULTLIB:ucrt.lib".to_string(),
         "/DEFAULTLIB:msvcrt.lib".to_string(),
         "/DEFAULTLIB:legacy_stdio_definitions.lib".to_string(),
+        "/DEFAULTLIB:kernel32.lib".to_string(),
         paths.obj_path.to_str().unwrap().to_string(),
     ];
     let lld_args_ref: Vec<&str> = lld_args.iter().map(|s| s.as_str()).collect();
@@ -105,6 +106,8 @@ fn clang_link_args(target: Option<&str>, exe_path: &Path, obj_path: &Path) -> Ve
         args.extend([
             "-lucrt".to_string(),
             "-llegacy_stdio_definitions".to_string(),
+            // SetConsoleOutputCP (UTF-8 console setup in main)
+            "-lkernel32".to_string(),
         ]);
     }
     if cfg!(target_os = "linux") {

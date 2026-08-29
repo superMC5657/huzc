@@ -188,6 +188,7 @@ impl<'ctx> CodeGen<'ctx> {
 
         let entry = self.context.append_basic_block(main_fn, "entry");
         self.builder.position_at_end(entry);
+        self.emit_console_utf8_setup();
         self.current_return_type = Some(self.context.i32_type().into());
         self.scopes = vec![HashMap::new()];
 

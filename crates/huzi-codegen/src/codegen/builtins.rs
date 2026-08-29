@@ -73,6 +73,13 @@ impl<'ctx> CodeGen<'ctx> {
             false,
         );
         self.module.add_function("strcpy", strcpy_fn, None);
+
+        // SetConsoleOutputCP (kernel32) for UTF-8 console output on Windows
+        if cfg!(windows) {
+            let set_cp_fn =
+                self.context.i32_type().fn_type(&[self.context.i32_type().into()], false);
+            self.module.add_function("SetConsoleOutputCP", set_cp_fn, None);
+        }
     }
 
     /// Declare the math functions (link to libm).
@@ -105,6 +112,21 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     // ==================== Scope helpers ====================
+
+    /// Switch the Windows console to the UTF-8 code page (65001) so `printf`
+    /// shows Chinese and other non-ASCII text correctly. String literals are
+    /// stored as UTF-8 bytes; without this the console decodes them with its
+    /// default code page (e.g. GBK) and prints mojibake. No-op elsewhere.
+    pub(super) fn emit_console_utf8_setup(&mut self) {
+        if !cfg!(windows) {
+            return;
+        }
+        let set_cp_fn = self.module.get_function("SetConsoleOutputCP").unwrap();
+        let utf8_cp = self.context.i32_type().const_int(65001, false);
+        self.builder
+            .build_call(set_cp_fn, &[utf8_cp.into()], "console_utf8")
+            .unwrap();
+    }
 
     pub(super) fn compile_print(
         &mut self,
