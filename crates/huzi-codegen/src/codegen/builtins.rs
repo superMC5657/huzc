@@ -1,0 +1,736 @@
+use super::CodeGen;
+use inkwell::AddressSpace;
+use inkwell::values::PointerValue;
+use huzi_ast::*;
+use huzi_error::{HuziError, Result};
+
+impl<'ctx> CodeGen<'ctx> {
+    pub(super) fn prelude(&mut self) -> Result<()> {
+        // printf for print function
+        let print_fn = self.context.i32_type().fn_type(
+            &[self
+                .context
+                .ptr_type(AddressSpace::default())
+                .into()],
+            true,
+        );
+        self.module.add_function("printf", print_fn, None);
+
+        // scanf for input functions
+        let scanf_fn = self.context.i32_type().fn_type(
+            &[self
+                .context
+                .ptr_type(AddressSpace::default())
+                .into()],
+            true,
+        );
+        self.module.add_function("scanf", scanf_fn, None);
+
+        // getchar for read_line
+        let getchar_fn = self.context.i32_type().fn_type(&[], false);
+        self.module.add_function("getchar", getchar_fn, None);
+
+        // malloc for string allocation (returns i8*)
+        let malloc_fn = self.context.ptr_type(inkwell::AddressSpace::default()).fn_type(
+            &[self.context.i32_type().into()],
+            false,
+        );
+        self.module.add_function("malloc", malloc_fn, None);
+
+        // sprintf for to_string
+        let sprintf_fn = self.context.i32_type().fn_type(
+            &[
+                self.context.ptr_type(AddressSpace::default()).into(),
+                self.context.ptr_type(AddressSpace::default()).into(),
+            ],
+            true,
+        );
+        self.module.add_function("sprintf", sprintf_fn, None);
+
+        // Math functions (link to libm)
+        let sqrt_fn = self.context.f64_type().fn_type(&[self.context.f64_type().into()], false);
+        self.module.add_function("sqrt", sqrt_fn, None);
+
+        let pow_fn = self.context.f64_type().fn_type(
+            &[
+                self.context.f64_type().into(),
+                self.context.f64_type().into(),
+            ],
+            false,
+        );
+        self.module.add_function("pow", pow_fn, None);
+
+        let sin_fn = self.context.f64_type().fn_type(&[self.context.f64_type().into()], false);
+        self.module.add_function("sin", sin_fn, None);
+
+        let cos_fn = self.context.f64_type().fn_type(&[self.context.f64_type().into()], false);
+        self.module.add_function("cos", cos_fn, None);
+
+        let fabs_fn = self.context.f64_type().fn_type(&[self.context.f64_type().into()], false);
+        self.module.add_function("fabs", fabs_fn, None);
+
+        for name in ["tan", "floor", "ceil", "round"] {
+            let f = self.context.f64_type().fn_type(&[self.context.f64_type().into()], false);
+            self.module.add_function(name, f, None);
+        }
+
+        // strlen for string length
+        let strlen_fn = self.context.i32_type().fn_type(
+            &[self
+                .context
+                .ptr_type(AddressSpace::default())
+                .into()],
+            false,
+        );
+        self.module.add_function("strlen", strlen_fn, None);
+
+        // strcpy for string copy
+        let strcpy_fn = self.context.i32_type().fn_type(
+            &[
+                self.context.ptr_type(AddressSpace::default()).into(),
+                self.context.ptr_type(AddressSpace::default()).into(),
+            ],
+            false,
+        );
+        self.module.add_function("strcpy", strcpy_fn, None);
+
+        Ok(())
+    }
+
+    // ==================== Scope helpers ====================
+
+    pub(super) fn compile_print(
+        &mut self,
+        arguments: &[Expr],
+    ) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
+        let printf_fn = self.module.get_function("printf").unwrap();
+
+        if arguments.is_empty() {
+            let empty_str = unsafe { self.builder.build_global_string("", "empty_str").unwrap() };
+            let call = self
+                .builder
+                .build_call(
+                    printf_fn,
+                    &[empty_str.as_pointer_value().into()],
+                    "print_empty",
+                )
+                .unwrap();
+            return Ok(call.try_as_basic_value().unwrap_left());
+        }
+
+        let mut format_string = String::new();
+        let mut args: Vec<inkwell::values::BasicMetadataValueEnum> = Vec::new();
+
+        for arg in arguments.iter() {
+            let value = self.compile_expr(arg)?;
+
+            match value {
+                inkwell::values::BasicValueEnum::IntValue(iv)
+                    if iv.get_type().get_bit_width() == 1 =>
+                {
+                    // Booleans print as true/false.
+                    let s = self.build_bool_str(iv)?;
+                    format_string.push_str("%s");
+                    args.push(s.into());
+                }
+                inkwell::values::BasicValueEnum::IntValue(iv) => {
+                    match iv.get_type().get_bit_width() {
+                        8 => {
+                            // Chars are printed as characters.
+                            format_string.push_str("%c");
+                            let c = self
+                                .builder
+                                .build_int_z_extend(iv, self.context.i32_type(), "char_promote")
+                                .unwrap();
+                            args.push(c.into());
+                        }
+                        64 => {
+                            format_string.push_str("%ld");
+                            args.push(iv.into());
+                        }
+                        _ => {
+                            format_string.push_str("%d");
+                            args.push(iv.into());
+                        }
+                    }
+                }
+                inkwell::values::BasicValueEnum::FloatValue(fv) => {
+                    // varargs promote floats to double
+                    let f64_val = if fv.get_type() == self.context.f64_type() {
+                        fv
+                    } else {
+                        self.builder
+                            .build_float_ext(fv, self.context.f64_type(), "f_promote")
+                            .unwrap()
+                    };
+                    if fv.get_type() == self.context.f32_type() {
+                        format_string.push_str("%g");
+                    } else {
+                        format_string.push_str("%f");
+                    }
+                    args.push(f64_val.into());
+                }
+                inkwell::values::BasicValueEnum::PointerValue(pv) => {
+                    format_string.push_str("%s");
+                    args.push(pv.into());
+                }
+                _ => {
+                    return Err(HuziError::new_global(
+                        "print() does not support this value type",
+                    ))
+                }
+            }
+        }
+
+        format_string.push('\n');
+
+        let format_ptr = unsafe {
+            self.builder
+                .build_global_string(&format_string, "format_str")
+                .unwrap()
+        };
+
+        let mut call_args = vec![format_ptr.as_pointer_value().into()];
+        call_args.extend(args);
+
+        let call = self
+            .builder
+            .build_call(printf_fn, &call_args, "print_call")
+            .unwrap();
+
+        Ok(call.try_as_basic_value().unwrap_left())
+    }
+
+    /// Build a global "true"/"false" string selected by the given i1 condition.
+    pub(super) fn build_bool_str(
+        &mut self,
+        cond: inkwell::values::IntValue<'ctx>,
+    ) -> Result<PointerValue<'ctx>> {
+        let true_ptr = match self.module.get_global("huzi_str_true") {
+            Some(g) => g.as_pointer_value(),
+            None => unsafe { self.builder.build_global_string("true", "huzi_str_true").unwrap() }
+                .as_pointer_value(),
+        };
+        let false_ptr = match self.module.get_global("huzi_str_false") {
+            Some(g) => g.as_pointer_value(),
+            None => unsafe {
+                self.builder
+                    .build_global_string("false", "huzi_str_false")
+                    .unwrap()
+            }
+            .as_pointer_value(),
+        };
+
+        let selected = self
+            .builder
+            .build_select(cond, true_ptr, false_ptr, "bool_str")
+            .unwrap();
+
+        Ok(selected.into_pointer_value())
+    }
+
+    pub(super) fn compile_read_line(&mut self) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
+        let malloc_fn = self.module.get_function("malloc").unwrap();
+        let getchar_fn = self.module.get_function("getchar").unwrap();
+
+        // Allocate buffer (256 bytes)
+        let buffer_size = self.context.i32_type().const_int(256, false);
+        let buffer = self
+            .builder
+            .build_call(malloc_fn, &[buffer_size.into()], "buffer")
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_left()
+            .into_pointer_value();
+
+        let i32_type = self.context.i32_type();
+        let idx_ptr = self.build_alloca(i32_type.into(), "read_idx")?;
+        self.builder
+            .build_store(idx_ptr, i32_type.const_int(0, false))
+            .unwrap();
+
+        let function = self.current_function()?;
+        let loop_block = self.context.append_basic_block(function, "read_loop");
+        let store_block = self.context.append_basic_block(function, "read_store");
+        let done_block = self.context.append_basic_block(function, "read_done");
+
+        self.builder
+            .build_unconditional_branch(loop_block)
+            .unwrap();
+
+        // Read one char per iteration until '\n', EOF, or buffer full.
+        self.builder.position_at_end(loop_block);
+        let c = self
+            .builder
+            .build_call(getchar_fn, &[], "ch")
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_left()
+            .into_int_value();
+
+        let idx = self
+            .builder
+            .build_load(i32_type, idx_ptr, "idx")
+            .unwrap()
+            .into_int_value();
+
+        let has_space = self
+            .builder
+            .build_int_compare(inkwell::IntPredicate::SLT, idx, i32_type.const_int(255, false), "has_space")
+            .unwrap();
+        let not_nl = self
+            .builder
+            .build_int_compare(inkwell::IntPredicate::NE, c, i32_type.const_int('\n' as u64, false), "not_nl")
+            .unwrap();
+        let not_eof = self
+            .builder
+            .build_int_compare(inkwell::IntPredicate::NE, c, i32_type.const_int(-1i64 as u64, true), "not_eof")
+            .unwrap();
+        let cont = self.builder.build_and(has_space, not_nl, "cont").unwrap();
+        let cont = self.builder.build_and(cont, not_eof, "cont2").unwrap();
+
+        self.builder
+            .build_conditional_branch(cont, store_block, done_block)
+            .unwrap();
+
+        self.builder.position_at_end(store_block);
+        let c8 = self
+            .builder
+            .build_int_truncate(c, self.context.i8_type(), "ch_i8")
+            .unwrap();
+        let ch_ptr = unsafe {
+            self.builder
+                .build_gep(self.context.i8_type(), buffer, &[idx], "ch_ptr")
+                .unwrap()
+        };
+        self.builder.build_store(ch_ptr, c8).unwrap();
+        let idx_next = self
+            .builder
+            .build_int_add(idx, i32_type.const_int(1, false), "idx_next")
+            .unwrap();
+        self.builder.build_store(idx_ptr, idx_next).unwrap();
+        self.builder
+            .build_unconditional_branch(loop_block)
+            .unwrap();
+
+        // Null-terminate and continue in the done block.
+        self.builder.position_at_end(done_block);
+        let term_ptr = unsafe {
+            self.builder
+                .build_gep(self.context.i8_type(), buffer, &[idx], "term_ptr")
+                .unwrap()
+        };
+        self.builder
+            .build_store(term_ptr, self.context.i8_type().const_int(0, false))
+            .unwrap();
+
+        Ok(buffer.into())
+    }
+
+    pub(super) fn compile_read_int(&mut self) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
+        let scanf_fn = self.module.get_function("scanf").unwrap();
+
+        // Format string for %d
+        let format_str = unsafe {
+            self.builder
+                .build_global_string("%d", "scanf_format_int")
+                .unwrap()
+        };
+
+        // Allocate space for int
+        let int_ptr = self.build_alloca(self.context.i32_type().into(), "int_input")?;
+
+        self.builder
+            .build_call(
+                scanf_fn,
+                &[
+                    format_str.as_pointer_value().into(),
+                    int_ptr.into(),
+                ],
+                "scanf_int",
+            )
+            .unwrap();
+
+        let value = self
+            .builder
+            .build_load(self.context.i32_type(), int_ptr, "int_value")
+            .unwrap();
+
+        Ok(value)
+    }
+
+    pub(super) fn compile_read_float(&mut self) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
+        let scanf_fn = self.module.get_function("scanf").unwrap();
+
+        // Format string for %lf
+        let format_str = unsafe {
+            self.builder
+                .build_global_string("%lf", "scanf_format_float")
+                .unwrap()
+        };
+
+        // Allocate space for double
+        let float_ptr = self.build_alloca(self.context.f64_type().into(), "float_input")?;
+
+        self.builder
+            .build_call(
+                scanf_fn,
+                &[
+                    format_str.as_pointer_value().into(),
+                    float_ptr.into(),
+                ],
+                "scanf_float",
+            )
+            .unwrap();
+
+        let value = self
+            .builder
+            .build_load(self.context.f64_type(), float_ptr, "float_value")
+            .unwrap();
+
+        Ok(value)
+    }
+
+    pub(super) fn compile_len(&mut self, arguments: &[Expr]) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
+        if arguments.len() != 1 {
+            return Err(HuziError::new_global("len() requires exactly 1 argument"));
+        }
+
+        // len(arr) on an array variable returns the tracked array length;
+        // strings use strlen.
+        if let Expr::Ident(name) = &arguments[0] {
+            if let Some(slot) = self.scope_lookup(name) {
+                if let Some(len) = slot.array_len {
+                    return Ok(self.context.i32_type().const_int(len as u64, false).into());
+                }
+            }
+        }
+
+        // len(s.arr) on a struct array field uses the declared array size.
+        if let Expr::FieldAccess(fa) = &arguments[0] {
+            if let Some((_, fields)) = self.struct_def_of_expr(&fa.base) {
+                if let Some(info) = fields.iter().find(|info| info.name == fa.field) {
+                    if let Type::Array(_, size) = &info.ast_ty {
+                        return Ok(self.context.i32_type().const_int(*size as u64, false).into());
+                    }
+                }
+            }
+        }
+
+        let arg = self.compile_expr(&arguments[0])?;
+        let arg = if arg.is_pointer_value() {
+            arg.into_pointer_value()
+        } else {
+            return Err(HuziError::new_global("len() requires a string or array argument"));
+        };
+
+        let strlen_fn = self.module.get_function("strlen").unwrap();
+        let len = self
+            .builder
+            .build_call(strlen_fn, &[arg.into()], "str_len")
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_left();
+
+        Ok(len)
+    }
+
+    pub(super) fn compile_abs(&mut self, arguments: &[Expr]) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
+        if arguments.len() != 1 {
+            return Err(HuziError::new_global("abs() requires exactly 1 argument"));
+        }
+
+        let arg = self.compile_expr(&arguments[0])?;
+
+        if arg.is_int_value() {
+            let int_val = arg.into_int_value();
+            let zero = int_val.get_type().const_int(0, false);
+            let is_neg = self
+                .builder
+                .build_int_compare(inkwell::IntPredicate::SLT, int_val, zero, "abs_neg")
+                .unwrap();
+            let negated = self.builder.build_int_neg(int_val, "abs_negated").unwrap();
+            let result = self
+                .builder
+                .build_select(is_neg, negated, int_val, "abs")
+                .unwrap();
+            Ok(result)
+        } else if arg.is_float_value() {
+            let float_val = arg.into_float_value();
+            let fabs_fn = self.module.get_function("fabs").unwrap();
+            let arg_f64 = if float_val.get_type() == self.context.f64_type() {
+                float_val
+            } else {
+                self.builder
+                    .build_float_cast(float_val, self.context.f64_type(), "to_f64")
+                    .unwrap()
+            };
+            let result = self
+                .builder
+                .build_call(fabs_fn, &[arg_f64.into()], "abs_result")
+                .unwrap()
+                .try_as_basic_value()
+                .unwrap_left();
+            Ok(result)
+        } else {
+            Err(HuziError::new_global("abs() requires a numeric argument"))
+        }
+    }
+
+    /// Single-argument libm wrappers (sqrt/sin/cos/tan/floor/ceil/round):
+    /// coerce the argument to f64, call the C function, return f64.
+    pub(super) fn compile_libm_unary(
+        &mut self,
+        fn_name: &str,
+        arguments: &[Expr],
+    ) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
+        if arguments.len() != 1 {
+            return Err(HuziError::new_global(format!(
+                "{}() requires exactly 1 argument",
+                fn_name
+            )));
+        }
+
+        let f = self
+            .module
+            .get_function(fn_name)
+            .ok_or_else(|| HuziError::new_global(format!("Unknown function: {}", fn_name)))?;
+        let arg = self.compile_expr(&arguments[0])?;
+        let arg_f64 = self.to_f64(arg, &format!("{}()", fn_name))?;
+
+        let result = self
+            .builder
+            .build_call(f, &[arg_f64.into()], "libm_result")
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_left();
+
+        Ok(result)
+    }
+
+    pub(super) fn compile_pow(&mut self, arguments: &[Expr]) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
+        if arguments.len() != 2 {
+            return Err(HuziError::new_global("pow() requires exactly 2 arguments"));
+        }
+
+        let pow_fn = self.module.get_function("pow").unwrap();
+        let base = self.compile_expr(&arguments[0])?;
+        let exp = self.compile_expr(&arguments[1])?;
+        let base_f64 = self.to_f64(base, "pow()")?;
+        let exp_f64 = self.to_f64(exp, "pow()")?;
+
+        let result = self
+            .builder
+            .build_call(pow_fn, &[base_f64.into(), exp_f64.into()], "pow_result")
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_left();
+
+        Ok(result)
+    }
+
+    /// Convert any numeric value to f64 for math builtins.
+    pub(super) fn to_f64(
+        &self,
+        arg: inkwell::values::BasicValueEnum<'ctx>,
+        fn_name: &str,
+    ) -> Result<inkwell::values::FloatValue<'ctx>> {
+        match arg {
+            inkwell::values::BasicValueEnum::IntValue(iv) => Ok(self
+                .builder
+                .build_signed_int_to_float(iv, self.context.f64_type(), "to_f64")
+                .unwrap()),
+            inkwell::values::BasicValueEnum::FloatValue(fv) => {
+                if fv.get_type() == self.context.f64_type() {
+                    Ok(fv)
+                } else {
+                    Ok(self
+                        .builder
+                        .build_float_cast(fv, self.context.f64_type(), "to_f64")
+                        .unwrap())
+                }
+            }
+            _ => Err(HuziError::new_global(format!(
+                "{} requires a numeric argument",
+                fn_name
+            ))),
+        }
+    }
+
+    pub(super) fn compile_concat(&mut self, arguments: &[Expr]) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
+        if arguments.len() < 2 {
+            return Err(HuziError::new_global("concat() requires at least 2 arguments"));
+        }
+
+        let malloc_fn = self.module.get_function("malloc").unwrap();
+        let strcpy_fn = self.module.get_function("strcpy").unwrap();
+        let strlen_fn = self.module.get_function("strlen").unwrap();
+
+        let mut arg_ptrs = Vec::with_capacity(arguments.len());
+        let mut arg_lens = Vec::with_capacity(arguments.len());
+        for a in arguments {
+            let v = self.compile_expr(a)?;
+            let ptr = if v.is_pointer_value() {
+                v.into_pointer_value()
+            } else {
+                return Err(HuziError::new_global("concat() requires string arguments"));
+            };
+            let len = self
+                .builder
+                .build_call(strlen_fn, &[ptr.into()], "len")
+                .unwrap()
+                .try_as_basic_value()
+                .unwrap_left()
+                .into_int_value();
+            arg_ptrs.push(ptr);
+            arg_lens.push(len);
+        }
+
+        // Allocate len(args...) + 1 for the null terminator.
+        let i32_type = self.context.i32_type();
+        let mut total_len = i32_type.const_int(0, false);
+        for len in &arg_lens {
+            total_len = self
+                .builder
+                .build_int_add(total_len, *len, "total_len")
+                .unwrap();
+        }
+        let alloc_size = self
+            .builder
+            .build_int_add(total_len, i32_type.const_int(1, false), "alloc_size")
+            .unwrap();
+        let buffer = self
+            .builder
+            .build_call(malloc_fn, &[alloc_size.into()], "concat_buffer")
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_left()
+            .into_pointer_value();
+
+        // Copy the first string, then append each remaining one.
+        self.builder
+            .build_call(strcpy_fn, &[buffer.into(), arg_ptrs[0].into()], "copy")
+            .unwrap();
+        let mut offset = arg_lens[0];
+        for (ptr, len) in arg_ptrs.iter().zip(arg_lens.iter()).skip(1) {
+            let dest = unsafe {
+                self.builder
+                    .build_gep(self.context.i8_type(), buffer, &[offset], "concat_dest")
+                    .unwrap()
+            };
+            self.builder
+                .build_call(strcpy_fn, &[dest.into(), (*ptr).into()], "copy")
+                .unwrap();
+            offset = self
+                .builder
+                .build_int_add(offset, *len, "offset")
+                .unwrap();
+        }
+
+        Ok(buffer.into())
+    }
+
+    pub(super) fn compile_to_string(&mut self, arguments: &[Expr]) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
+        if arguments.len() != 1 {
+            return Err(HuziError::new_global("to_string() requires exactly 1 argument"));
+        }
+
+        let malloc_fn = self.module.get_function("malloc").unwrap();
+        let sprintf_fn = self.module.get_function("sprintf").unwrap();
+
+        let arg = self.compile_expr(&arguments[0])?;
+
+        // Determine format string based on type
+        let format_str = match arg {
+            inkwell::values::BasicValueEnum::IntValue(iv)
+                if iv.get_type().get_bit_width() == 1 =>
+            {
+                let s = self.build_bool_str(iv)?;
+                let buffer_size = self.context.i32_type().const_int(8, false);
+                let buffer = self
+                    .builder
+                    .build_call(malloc_fn, &[buffer_size.into()], "str_buffer")
+                    .unwrap()
+                    .try_as_basic_value()
+                    .unwrap_left()
+                    .into_pointer_value();
+                self.builder
+                    .build_call(
+                        sprintf_fn,
+                        &[buffer.into(), s.into()],
+                        "sprintf",
+                    )
+                    .unwrap();
+                return Ok(buffer.into());
+            }
+            inkwell::values::BasicValueEnum::IntValue(iv) => {
+                if iv.get_type().get_bit_width() == 64 {
+                    let fmt = unsafe { self.builder.build_global_string("%ld", "fmt_i64").unwrap() };
+                    (fmt, inkwell::values::BasicValueEnum::IntValue(iv))
+                } else if iv.get_type().get_bit_width() == 8 {
+                    let fmt = unsafe { self.builder.build_global_string("%c", "fmt_c").unwrap() };
+                    let promoted = self
+                        .builder
+                        .build_int_z_extend(iv, self.context.i32_type(), "char_promote")
+                        .unwrap();
+                    (fmt, inkwell::values::BasicValueEnum::IntValue(promoted))
+                } else {
+                    let fmt = unsafe { self.builder.build_global_string("%d", "fmt_i32").unwrap() };
+                    (fmt, inkwell::values::BasicValueEnum::IntValue(iv))
+                }
+            }
+            inkwell::values::BasicValueEnum::FloatValue(fv) => {
+                // Promote to double for printf-style varargs.
+                let f64_val = if fv.get_type() == self.context.f64_type() {
+                    fv
+                } else {
+                    self.builder
+                        .build_float_ext(fv, self.context.f64_type(), "f_promote")
+                        .unwrap()
+                };
+                if fv.get_type() == self.context.f32_type() {
+                    let fmt = unsafe { self.builder.build_global_string("%g", "fmt_f32").unwrap() };
+                    (fmt, inkwell::values::BasicValueEnum::FloatValue(f64_val))
+                } else {
+                    let fmt = unsafe { self.builder.build_global_string("%f", "fmt_f64").unwrap() };
+                    (fmt, inkwell::values::BasicValueEnum::FloatValue(f64_val))
+                }
+            }
+            inkwell::values::BasicValueEnum::PointerValue(_) => {
+                return Err(HuziError::new_global(
+                    "to_string() requires a numeric argument",
+                ))
+            }
+            _ => {
+                return Err(HuziError::new_global(
+                    "to_string() unsupported type",
+                ))
+            }
+        };
+
+        // Allocate buffer (large enough for any double formatting)
+        let buffer_size = self.context.i32_type().const_int(320, false);
+        let buffer = self
+            .builder
+            .build_call(malloc_fn, &[buffer_size.into()], "str_buffer")
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_left()
+            .into_pointer_value();
+
+        // Call sprintf
+        self.builder
+            .build_call(
+                sprintf_fn,
+                &[buffer.into(), format_str.0.as_pointer_value().into(), format_str.1.into()],
+                "sprintf",
+            )
+            .unwrap();
+
+        Ok(buffer.into())
+    }
+
+    // ==================== Struct Functions ====================
+
+
+}
