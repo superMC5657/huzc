@@ -30,8 +30,7 @@ PY_RUNS = 1    # 解释型太慢，只跑一次
 
 
 def find_compiler():
-    for rel in ("target/release/huzc.exe", "target/release/huzc",
-                "target/debug/huzc.exe", "target/debug/huzc"):
+    for rel in ("target/release/huzc.exe", "target/release/huzc"):
         path = os.path.join(ROOT, rel)
         if os.path.exists(path):
             return path
@@ -74,7 +73,7 @@ def compile_rust_bench(release):
                                   "bench_perf_rs_opt" if release else "bench_perf_rs"))
     mode = "rustc -O" if release else "rustc (debug)"
     print(f"编译 {src} ({mode}) ...")
-    cmd = ["rustc"] + (["-O"] if release else []) + [src, "-o", out]
+    cmd = ["rustc"] + (["-O"] if release else []) + [src, "-o", out] + ["-C", "link-arg=/DEBUG:NONE"]
     subprocess.run(cmd, cwd=ROOT, check=True,
                    stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     if not os.path.exists(out):
