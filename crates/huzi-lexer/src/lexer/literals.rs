@@ -49,6 +49,11 @@ impl Lexer {
                     if self.pos + 1 < self.source.len() && self.source[self.pos + 1] == '.' {
                         break;
                     }
+                    // After `.` the number is a tuple index: `t.1.2` must lex
+                    // as three tokens, not `t`, `.`, `1.2`.
+                    if self.prev_was_dot {
+                        break;
+                    }
                     has_dot = true;
                     self.advance();
                 }

@@ -9,6 +9,10 @@ pub struct Lexer {
     pos: usize,
     line: usize,
     column: usize,
+    /// True when the previously emitted token was `.`. A number right after a
+    /// dot is a tuple element index (`t.0`, `t.1.2`), so it must not swallow
+    /// the following `.digit` as a float.
+    prev_was_dot: bool,
 }
 
 impl Lexer {
@@ -18,6 +22,7 @@ impl Lexer {
             pos: 0,
             line: 1,
             column: 1,
+            prev_was_dot: false,
         }
     }
 
@@ -26,6 +31,7 @@ impl Lexer {
         loop {
             let token = self.next_token()?;
             let is_eof = token.token == Token::Eof;
+            self.prev_was_dot = token.token == Token::Dot;
             tokens.push(token);
             if is_eof {
                 break;

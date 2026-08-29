@@ -33,6 +33,7 @@ impl<'ctx> CodeGen<'ctx> {
     pub(super) fn compile_let(&mut self, stmt: &LetStmt) -> Result<()> {
         match &stmt.value {
             Some(Expr::ArrayLiteral(elements)) => self.compile_let_array(stmt, elements),
+            Some(Expr::TupleLiteral(elements)) => self.compile_let_tuple(stmt, elements),
             Some(value_expr) => self.compile_let_with_value(stmt, value_expr),
             None => self.compile_let_uninitialized(stmt),
         }

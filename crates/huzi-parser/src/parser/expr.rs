@@ -193,7 +193,23 @@ impl Parser {
                 });
             } else if self.check(&Token::Dot) {
                 self.advance();
-                let field = self.expect_ident("Expected field name after '.'")?;
+                // Tuple element access: `t.0`, `t.1`, ... — a digit after the
+                // dot is an element index, not a field name.
+                let index = if self.is_at_end() {
+                    None
+                } else {
+                    match self.peek().clone() {
+                        Token::Int(n) => {
+                            self.advance();
+                            Some(n.to_string())
+                        }
+                        _ => None,
+                    }
+                };
+                let field = match index {
+                    Some(i) => i,
+                    None => self.expect_ident("Expected field name after '.'")?,
+                };
                 expr = Expr::FieldAccess(FieldAccessExpr {
                     base: Box::new(expr),
                     field,
@@ -287,9 +303,7 @@ impl Parser {
             }
             Token::LParen => {
                 self.advance();
-                let expr = self.parse_expression()?;
-                self.expect(&Token::RParen, "Expected ')' after expression")?;
-                Ok(expr)
+                return self.parse_paren_or_tuple();
             }
             Token::LBracket => {
                 // Array literal: [1, 2, 3]
@@ -316,6 +330,25 @@ impl Parser {
                 self.current_col(),
             )),
         }
+    }
+
+    /// After `(` is consumed: `(a, b)` is a tuple literal, a bare `(expr)` is
+    /// just grouping.
+    fn parse_paren_or_tuple(&mut self) -> Result<Expr> {
+        let first = self.parse_expression()?;
+
+        if !self.check(&Token::Comma) {
+            self.expect(&Token::RParen, "Expected ')' after expression")?;
+            return Ok(first);
+        }
+
+        let mut elements = vec![first];
+        while self.check(&Token::Comma) {
+            self.advance();
+            elements.push(self.parse_expression()?);
+        }
+        self.expect(&Token::RParen, "Expected ')' after tuple literal")?;
+        Ok(Expr::TupleLiteral(elements))
     }
 
     /// True if the upcoming tokens look like `{ field: ... }` — the shape of a

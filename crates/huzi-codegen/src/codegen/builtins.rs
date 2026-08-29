@@ -176,12 +176,19 @@ impl<'ctx> CodeGen<'ctx> {
 
     /// Append one printed value to the printf format string and argument
     /// list, promoting/narrowing according to C varargs conventions.
-    fn format_print_value(
+    pub(super) fn format_print_value(
         &mut self,
         value: inkwell::values::BasicValueEnum<'ctx>,
         format_string: &mut String,
         args: &mut Vec<inkwell::values::BasicMetadataValueEnum<'ctx>>,
     ) -> Result<()> {
+        // Tuples print as `(v1, v2, ...)` with each field formatted.
+        if let inkwell::values::BasicValueEnum::StructValue(sv) = value {
+            if self.is_tuple_type(sv.get_type()) {
+                return self.format_tuple_value(sv.into(), format_string, args);
+            }
+        }
+
         match value {
             inkwell::values::BasicValueEnum::IntValue(iv)
                 if iv.get_type().get_bit_width() == 1 =>

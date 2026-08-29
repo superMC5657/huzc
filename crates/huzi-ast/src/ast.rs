@@ -14,6 +14,7 @@ pub enum Type {
     Unit,
     Named(String),
     Array(Box<Type>, usize), // Array<ElementType, Size>
+    Tuple(Vec<Type>),
 }
 
 impl fmt::Display for Type {
@@ -31,6 +32,16 @@ impl fmt::Display for Type {
             Type::Unit => write!(f, "()"),
             Type::Named(name) => write!(f, "{}", name),
             Type::Array(elem_type, size) => write!(f, "[{}; {}]", elem_type, size),
+            Type::Tuple(elems) => {
+                write!(f, "(")?;
+                for (i, elem) in elems.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", elem)?;
+                }
+                write!(f, ")")
+            }
         }
     }
 }
@@ -150,6 +161,7 @@ pub enum Expr {
     Assign(AssignExpr),
     ArrayIndex(ArrayIndexExpr),
     ArrayLiteral(Vec<Expr>),
+    TupleLiteral(Vec<Expr>),
     If(IfExpr),
     FieldAccess(FieldAccessExpr),
     StructLiteral(StructLiteralExpr),

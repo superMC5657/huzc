@@ -13,6 +13,7 @@ mod aggregates;
 mod builtins;
 mod expr;
 mod stmt;
+mod tuples;
 mod types;
 
 

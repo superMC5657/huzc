@@ -70,6 +70,22 @@ impl Parser {
             return Ok(Type::Array(Box::new(elem_type), size));
         }
 
+        // Tuple type: () is unit, (T1, T2, ...) is a tuple.
+        if self.check(&Token::LParen) {
+            self.advance(); // consume '('
+            if self.check(&Token::RParen) {
+                self.advance();
+                return Ok(Type::Unit);
+            }
+            let mut elems = vec![self.parse_type()?];
+            while self.check(&Token::Comma) {
+                self.advance();
+                elems.push(self.parse_type()?);
+            }
+            self.expect(&Token::RParen, "Expected ')' in tuple type")?;
+            return Ok(Type::Tuple(elems));
+        }
+
         let ty = match self.peek() {
             Token::Ident(name) => {
                 let t = Type::Named(name.clone());

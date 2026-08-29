@@ -275,6 +275,15 @@ impl<'ctx> CodeGen<'ctx> {
             // Arrays decay to pointers (LLVM opaque pointers make these
             // equivalent); element types are tracked in VarSlot.
             Type::Array(_, _) => Ok(self.context.ptr_type(AddressSpace::default()).into()),
+            // Tuples are literal structs: LLVM compares them structurally, so
+            // two `(i32, str)` tuple types are always equal.
+            Type::Tuple(elems) => {
+                let mut field_types = Vec::with_capacity(elems.len());
+                for elem in elems {
+                    field_types.push(self.type_to_llvm(elem)?);
+                }
+                Ok(self.context.struct_type(&field_types, false).into())
+            }
             Type::Named(name) => match name.as_str() {
                 "i32" | "u32" => Ok(self.context.i32_type().into()),
                 "i64" | "u64" => Ok(self.context.i64_type().into()),

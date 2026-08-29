@@ -23,6 +23,7 @@ impl<'ctx> CodeGen<'ctx> {
             Expr::Assign(assign_expr) => self.compile_assign(assign_expr),
             Expr::ArrayIndex(idx_expr) => self.compile_array_index(idx_expr),
             Expr::ArrayLiteral(elements) => self.compile_array_literal(elements),
+            Expr::TupleLiteral(elements) => self.compile_tuple_literal(elements),
             Expr::If(if_expr) => self.compile_if_expr(if_expr),
             Expr::FieldAccess(fa) => self.compile_field_access(fa),
             Expr::StructLiteral(sl) => self.compile_struct_literal(sl),
@@ -495,13 +496,23 @@ impl<'ctx> CodeGen<'ctx> {
         }
     }
 
-    /// GEP to a named field of the struct value stored at `base_ptr`.
+    /// GEP to a named field of the struct value stored at `base_ptr`, or to
+    /// element `field` when the base is a tuple and the field is an index
+    /// (`t.0`).
     pub(super) fn gep_field(
         &self,
         base_ptr: PointerValue<'ctx>,
         base_ty: inkwell::types::BasicTypeEnum<'ctx>,
         field: &str,
     ) -> Result<(PointerValue<'ctx>, inkwell::types::BasicTypeEnum<'ctx>)> {
+        if let Ok(index) = field.parse::<usize>() {
+            if let inkwell::types::BasicTypeEnum::StructType(st) = base_ty {
+                if self.is_tuple_type(st) {
+                    return self.gep_tuple_field(base_ptr, st, index);
+                }
+            }
+        }
+
         let (_, fields) = self
             .struct_def_by_type(base_ty)
             .ok_or_else(|| HuziError::new_global("Value has no fields (not a struct)"))?;
