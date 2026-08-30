@@ -285,3 +285,33 @@ fn system_builtins_verify() {
         assert!(ir.contains(symbol), "IR should declare {symbol}");
     }
 }
+
+/// 文件 I/O 内置函数生成合法 IR,声明 stdio 符号。
+#[test]
+fn file_io_builtins_verify() {
+    let context = Context::create();
+    let mut codegen = CodeGen::new(&context, "test");
+    let call = |name: &str, args: Vec<Expr>| Expr::Call(CallExpr {
+        callee: Box::new(Expr::Ident(name.to_string())),
+        arguments: args,
+    });
+    let program = main_program(vec![
+        let_stmt("content", Expr::Literal(Literal::String("data".to_string()))),
+        let_stmt("ok", call("write_file", vec![
+            Expr::Literal(Literal::String("out.txt".to_string())),
+            Expr::Ident("content".to_string()),
+        ])),
+        let_stmt("data", call("read_file", vec![
+            Expr::Literal(Literal::String("out.txt".to_string())),
+        ])),
+        sp(Stmt::Return(ReturnStmt {
+            value: Some(Expr::Literal(Literal::Int(0))),
+        })),
+    ]);
+    codegen.compile(&program).expect("compile should succeed");
+    assert!(codegen.verify());
+    let ir = codegen.print_llvm_ir();
+    for symbol in ["declare ptr @fopen", "declare i64 @fread", "declare i64 @fwrite"] {
+        assert!(ir.contains(symbol), "IR should declare {symbol}");
+    }
+}

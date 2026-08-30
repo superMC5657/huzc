@@ -433,6 +433,8 @@ impl<'ctx> CodeGen<'ctx> {
             "time" => return self.compile_time(),
             "exit" => return self.compile_exit(&expr.arguments),
             "sleep_ms" => return self.compile_sleep_ms(&expr.arguments),
+            "read_file" => return self.compile_read_file(&expr.arguments),
+            "write_file" => return self.compile_write_file(&expr.arguments),
             _ => {}
         }
 

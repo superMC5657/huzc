@@ -116,6 +116,55 @@ impl<'ctx> CodeGen<'ctx> {
             self.module.add_function("usleep", usleep_fn, None);
         }
 
+        // stdio for read_file/write_file (size_t is 64-bit on x86_64)
+        let fopen_fn = self.context.ptr_type(AddressSpace::default()).fn_type(
+            &[
+                self.context.ptr_type(AddressSpace::default()).into(),
+                self.context.ptr_type(AddressSpace::default()).into(),
+            ],
+            false,
+        );
+        self.module.add_function("fopen", fopen_fn, None);
+        let fclose_fn = self.context.i32_type().fn_type(
+            &[self.context.ptr_type(AddressSpace::default()).into()],
+            false,
+        );
+        self.module.add_function("fclose", fclose_fn, None);
+        let fread_fn = self.context.i64_type().fn_type(
+            &[
+                self.context.ptr_type(AddressSpace::default()).into(),
+                self.context.i64_type().into(),
+                self.context.i64_type().into(),
+                self.context.ptr_type(AddressSpace::default()).into(),
+            ],
+            false,
+        );
+        self.module.add_function("fread", fread_fn, None);
+        let fwrite_fn = self.context.i64_type().fn_type(
+            &[
+                self.context.ptr_type(AddressSpace::default()).into(),
+                self.context.i64_type().into(),
+                self.context.i64_type().into(),
+                self.context.ptr_type(AddressSpace::default()).into(),
+            ],
+            false,
+        );
+        self.module.add_function("fwrite", fwrite_fn, None);
+        let fseek_fn = self.context.i32_type().fn_type(
+            &[
+                self.context.ptr_type(AddressSpace::default()).into(),
+                self.context.i64_type().into(),
+                self.context.i32_type().into(),
+            ],
+            false,
+        );
+        self.module.add_function("fseek", fseek_fn, None);
+        let ftell_fn = self.context.i32_type().fn_type(
+            &[self.context.ptr_type(AddressSpace::default()).into()],
+            false,
+        );
+        self.module.add_function("ftell", ftell_fn, None);
+
         // strcpy for string copy
         let strcpy_fn = self.context.i32_type().fn_type(
             &[
