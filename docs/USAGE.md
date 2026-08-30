@@ -130,6 +130,11 @@ for i in 0..10 {
     print(i)
 }
 
+# 循环 (数组遍历)
+for x in arr {
+    print(x)
+}
+
 # 条件循环
 while x > 0 {
     x = x - 1
@@ -384,6 +389,16 @@ fn main() -> i32 {
 >=  # 大于等于
 ```
 
+字符串使用全部六个比较运算符(按字典序,基于 `strcmp`):
+
+```python
+if s == "quit" {
+    print("bye!")
+}
+```
+
+数组不能直接比较(编译报错),请逐元素比较。
+
 ### 逻辑运算符
 ```python
 &&  # 逻辑与
@@ -453,6 +468,45 @@ fn main() -> i32 {
 | `len(s)` | 获取字符串长度 | `len("hello")` → 5 |
 | `concat(a, b)` | 字符串拼接 | `concat("a", "b")` → "ab" |
 | `to_string(x)` | 数值转字符串 | `to_string(42)` → "42" |
+
+### 随机数 / 时间 / 进程
+| 函数 | 说明 | 示例 |
+|------|------|------|
+| `srand(seed)` | 设置伪随机数序列起点 | `srand(42)` |
+| `rand()` | 伪随机数,`0..=RAND_MAX`(Windows 为 32767);同一 seed 序列可复现 | `rand() % 100` |
+| `time()` | 当前 Unix 时间戳(秒,i64) | `let t = time()` |
+| `exit(n)` | 立即终止进程,退出码 n | `exit(1)` |
+| `sleep_ms(ms)` | 毫秒级睡眠(负值按 0) | `sleep_ms(100)` |
+
+```huzi
+fn main() -> i32 {
+    srand(time())      # 用时钟播种,每次运行序列不同
+    print(rand() % 6 + 1)   # 掷骰子
+    0
+}
+```
+
+### 文件读写
+| 函数 | 说明 | 示例 |
+|------|------|------|
+| `read_file(path)` | 一次性读入整个文件(≤2GB);失败返回空串 | `let s = read_file("data.txt")` |
+| `write_file(path, content)` | 整体写入(覆盖);返回是否成功 | `write_file("out.txt", s)` |
+
+```huzi
+fn main() -> i32 {
+    if write_file("out/demo.txt", "hello file\n") {
+        print(read_file("out/demo.txt"))    # hello file
+    }
+    0
+}
+```
+
+### 运行时错误
+以下错误在运行时立即终止程序(打印一行错误后以退出码 1 退出):
+
+- 整数除零 / 取模零:`Runtime error: division by zero`(浮点除法遵循 IEEE 语义,不检查)
+- 数组下标越界:`Runtime error: array index out of bounds (length N)`(负下标同样报错)
+- 字符串下标 `s[i]` 越界**不做检查**(返回越界字节),请先用 `len(s)` 校验
 
 ### 数学
 | 函数 | 说明 | 示例 |
