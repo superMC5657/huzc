@@ -125,9 +125,8 @@ huzc/
 - [x] 与 LLDB/GDB 集成 (`-g` 生成 DWARF;gdb 断点/print/单步实测通过,见 docs/USAGE.md「调试」)
 
 #### 14. 测试
-- [x] 单元测试 (各 crate 共 22 个:lexer 分词/span、parser 优先级/结构、codegen 类型映射/verify、error 建议/渲染)
-- [x] 集成测试 (test.sh 编译并运行全部示例，校验退出码)
-- [x] 回归测试 (test.sh 与 test/snapshots/ 输出快照逐字节比对，UPDATE=1 重建快照)
+- [x] 单元测试 (各 crate 共 33 个:lexer 分词/span、parser 优先级/结构/for-in、codegen 类型映射/verify/运行时检查、error 建议/渲染)
+- [x] 集成回归测试 (test.sh 编译并运行全部示例,校验退出码)
 
 ---
 
@@ -166,6 +165,14 @@ huzc/
 
 ---
 
+## 2026-09-01 更新:移除快照回归机制描述
+
+- `test.sh` 的回归验证始终为:**编译并运行 examples/ 全部示例,校验退出码**(当前 28 个)。
+- 此前文档描述的 `test/snapshots/` 输出快照逐字节比对与 `UPDATE=1` 重建流程,在实际脚本中并不存在(快照目录从未入库、脚本无比对逻辑),相关描述已从文档移除。
+- 同期功能:`strcmp` 字符串比较、除零/越界运行时检查、`rand/srand/time/exit/sleep_ms`、`read_file/write_file`、for-in 数组遍历(见各功能提交)。
+
+---
+
 ## 2026-08-30 更新(三)
 
 完成 **argc/argv 与管道 stdin**(P1 第 3 项补充)与**四则计算器模块化示例**(两次提交):
@@ -182,11 +189,11 @@ huzc/
 
 完成**调试支持**(P4 第 13 项全部三个子项,两次提交):
 
-- **AST 携带位置**(纯重构提交):huzi-ast 新增 `Span`/`Spanned<T>`,Program/Block 语句携带行列号;parser 在语句起点记录位置,合成语句(if 表达式/match 手臂/elif 折叠)继承对应关键字位置;codegen `compile_stmt` 改为 `(&Stmt, Span)` 签名。行为零变化(快照逐字节一致)。
+- **AST 携带位置**(纯重构提交):huzi-ast 新增 `Span`/`Spanned<T>`,Program/Block 语句携带行列号;parser 在语句起点记录位置,合成语句(if 表达式/match 手臂/elif 折叠)继承对应关键字位置;codegen `compile_stmt` 改为 `(&Stmt, Span)` 签名。行为零变化(示例输出不变)。
 - **DWARF 生成**(功能提交):`codegen/debuginfo.rs` —— `-g` 时创建 DICompileUnit,每个函数挂 DISubprogram,语句按 Span 设置 DILocation,参数与 let 变量挂 `llvm.dbg.declare`(含结构体/数据枚举/元组的 DICompositeType,成员偏移按 LLVM 布局计算);文件模块按各自路径生成 DIFile。
 - **CLI/流水线**:`-g/--debug` 选项,隐含 opt-level 0;llc 加 `-debugger-tune=gdb`;链接器加 `/DEBUG`(msvc)或 `-g`(clang/mingw)。
 - **关键修复**:模块须带 `Debug Info Version` 标志,否则 llc 报 "invalid version (0)" 丢弃全部调试信息;`fs::canonicalize` 的 `\\?\` 前缀须剥除,否则 gdb 找不到源文件。
-- **验证**:`llvm-dwarfdump` 确认编译单元/子程序/变量/行号表;GDB 14.2 实测断点按源码行命中、`print x` 得到正确值、源码行显示正常(Windows 建议 `-l mingw` 配合 gdb)。单元测试 +4(parser span、codegen DI 元数据/无 DI 干净输出);快照输出不变;另补齐了此前未纳入版本管理的 test/snapshots/*.out(21 个)。
+- **验证**:`llvm-dwarfdump` 确认编译单元/子程序/变量/行号表;GDB 14.2 实测断点按源码行命中、`print x` 得到正确值、源码行显示正常(Windows 建议 `-l mingw` 配合 gdb)。单元测试 +4(parser span、codegen DI 元数据/无 DI 干净输出);示例输出不变。
 
 ## 2026-08-30 更新
 
@@ -195,7 +202,6 @@ huzc/
 - **优化级别**:新增 `--opt-level 0-3`;`--release` 等价于 level 2。内联/常量折叠/CSE 由 `opt` 内置 pass 序列承担。
 - **错误体验**:错误报告带源码行摘录 + `^` 列指示(huzi-error render);未定义变量/函数附 Levenshtein "did you mean" 建议(huzi-error suggest)。
 - **单元测试**:lexer/parser/codegen/error 共 22 个 `#[cfg(test)]` 测试。
-- **快照回归**:test.sh 与 test/snapshots/ 输出逐字节比对(比对前剥离 `\r`,跨平台一致),`UPDATE=1` 重建快照。
 
 同日完成**模块系统**(P2 最后一个语言特性缺口):
 
