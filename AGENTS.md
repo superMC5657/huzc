@@ -57,7 +57,7 @@ huzi-codegen/src/codegen/
    ```bash
    # 记录基线
    for f in examples/*.hz; do
-     cargo run -q -p huzc -- --input "$f" >/dev/null 2>&1 && ./a.exe; echo "[exit=$?]"
+     cargo run -q -p huzc -- --input "$f" >/dev/null 2>&1 && ./out/a.exe; echo "[exit=$?]"
    done > /tmp/baseline_output.txt
    # 重构后同命令生成新输出,diff 两者必须为空
    ```
