@@ -3,6 +3,7 @@ use huzi_error::HuziError;
 use huzi_error::Result;
 use std::collections::HashMap;
 use inkwell::{
+    AddressSpace,
     builder::Builder,
     context::Context,
     module::Module,
@@ -54,6 +55,7 @@ fn module_fn_statements(program: &Program) -> Vec<(FnStmt, Span)> {
 }
 
 mod aggregates;
+mod args;
 mod builtins;
 mod debuginfo;
 mod expr;
@@ -309,12 +311,21 @@ impl<'ctx> CodeGen<'ctx> {
             ));
         }
 
-        let main_type = self.context.i32_type().fn_type(&[], false);
+        // The C runtime calls `main(argc, argv)`; capture both into globals
+        // so the arg()/arg_count() builtins can read them.
+        let i32_type = self.context.i32_type();
+        let ptr_type = self.context.ptr_type(AddressSpace::default());
+        let main_type = i32_type.fn_type(&[i32_type.into(), ptr_type.into()], false);
         let line = top_level
             .first()
             .map(|s| s.span.line as u32)
             .unwrap_or(1);
-        let sp = self.create_subprogram("main", line, &[], self.context.i32_type().into());
+        let sp = self.create_subprogram(
+            "main",
+            line,
+            &[i32_type.into(), ptr_type.into()],
+            i32_type.into(),
+        );
         let main_fn = self.module.add_function("main", main_type, None);
         if let Some(sp) = sp {
             main_fn.set_subprogram(sp);
@@ -326,6 +337,7 @@ impl<'ctx> CodeGen<'ctx> {
         self.builder.position_at_end(entry);
         self.clear_debug_location();
         self.emit_console_utf8_setup();
+        self.store_main_args(main_fn);
         self.current_return_type = Some(self.context.i32_type().into());
         self.scopes = vec![HashMap::new()];
 
@@ -356,6 +368,17 @@ impl<'ctx> CodeGen<'ctx> {
             .iter()
             .map(|p| self.type_to_llvm(&p.param_type))
             .collect::<Result<Vec<_>>>()?;
+        // The entry point is compiled with the C `main(argc, argv)` signature
+        // so the arg builtins can capture them; Huzi-level `fn main()` stays
+        // parameterless.
+        let param_llvm_types = if qualified_name == "main" && param_llvm_types.is_empty() {
+            vec![
+                self.context.i32_type().into(),
+                self.context.ptr_type(AddressSpace::default()).into(),
+            ]
+        } else {
+            param_llvm_types
+        };
         let param_types: Vec<inkwell::types::BasicMetadataTypeEnum<'ctx>> =
             param_llvm_types.iter().map(|t| (*t).into()).collect();
 

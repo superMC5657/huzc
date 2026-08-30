@@ -31,10 +31,10 @@ pub fn link(paths: &OutputPaths, linker: LinkerKind, debug: bool, quiet: bool) {
 /// Link with lld-link. It auto-detects the MSVC/Windows SDK lib directories,
 /// so no /LIBPATH is needed.
 fn link_msvc(paths: &OutputPaths, debug: bool, quiet: bool) {
-    let mut lld_args: Vec<String> = vec![
-        format!("/OUT:{}", paths.exe_path.to_str().unwrap()),
-        "/ENTRY:main".to_string(),
-    ];
+    // No /ENTRY override: the default console entry (mainCRTStartup) runs the
+    // CRT startup and calls `main(argc, argv)` with real arguments. Forcing
+    // /ENTRY:main would make the OS call main directly with garbage args.
+    let mut lld_args: Vec<String> = vec![format!("/OUT:{}", paths.exe_path.to_str().unwrap())];
     if debug {
         // Keep the debug sections/DWARF info in the executable.
         lld_args.push("/DEBUG".to_string());

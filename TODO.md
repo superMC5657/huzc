@@ -53,6 +53,8 @@ huzc/
 - [x] `read_line()` - 读取一行输入
 - [x] `read_int()` - 读取整数
 - [x] `read_float()` - 读取浮点数
+- [x] `is_eof()` - stdin 是否读到末尾(管道输入结束检测)
+- [x] `arg_count()` / `arg(i)` - 命令行参数访问(main 以 `main(argc, argv)` ABI 编译)
 
 #### 4. 字符串操作
 - [x] `len(s)` - 获取字符串长度

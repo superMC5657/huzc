@@ -361,6 +361,9 @@ impl<'ctx> CodeGen<'ctx> {
             "round" => return self.compile_libm_unary("round", &expr.arguments),
             "concat" => return self.compile_concat(&expr.arguments),
             "to_string" => return self.compile_to_string(&expr.arguments),
+            "arg_count" => return self.compile_arg_count(),
+            "arg" => return self.compile_arg(&expr.arguments),
+            "is_eof" => return self.compile_is_eof(),
             _ => {}
         }
 

@@ -400,6 +400,52 @@ fn main() -> i32 {
 | `read_line()` | 读取一行字符串 | `let s = read_line()` |
 | `read_int()` | 读取整数 | `let n = read_int()` |
 | `read_float()` | 读取浮点数 | `let f = read_float()` |
+| `is_eof()` | stdin 是否已读到末尾 | `if is_eof() { break }` |
+
+### 命令行参数
+| 函数 | 说明 | 示例 |
+|------|------|------|
+| `arg_count()` | 参数个数(含程序名) | `let n = arg_count()` |
+| `arg(i)` | 第 i 个参数;越界/负数返回空串 | `arg(1)` → 第一个用户参数 |
+
+```huzi
+fn main() -> i32 {
+    let mut i = 0
+    while i < arg_count() {
+        print(arg(i))
+        i = i + 1
+    }
+    0
+}
+```
+
+- `arg(0)` 是程序自身路径;`arg(1)` 起是用户参数。
+- `arg(i)` 返回的字符串直接指向 argv 存储(零拷贝),不要改写其内容。
+- 限制:Windows 下 argv 来自 ANSI 入口,非 ASCII 参数可能乱码。
+
+### 管道输入
+`read_line()`/`read_int()`/`read_float()` 均可读管道或重定向的 stdin,配合
+`is_eof()` 判断输入结束:
+
+```huzi
+# echo "你好" | ./prog.exe
+fn main() -> i32 {
+    let mut done = false
+    while !done {
+        let line = read_line()
+        if is_eof() {
+            done = true
+        } else {
+            print(concat("<< ", line))
+        }
+    }
+    0
+}
+```
+
+惯用法是**先读取再检查 `is_eof()`**:读到末尾时 `read_line()` 返回空串且
+`is_eof()` 变为 true,此时停止处理即可。参考 `examples/23_cli_args.hz`
+与 `examples/24_pipe_read.hz`。
 
 ### 字符串
 | 函数 | 说明 | 示例 |

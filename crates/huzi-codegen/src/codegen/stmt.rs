@@ -175,6 +175,11 @@ impl<'ctx> CodeGen<'ctx> {
         // The program entry point sets up UTF-8 console output first.
         if stmt.name == "main" {
             self.emit_console_utf8_setup();
+            // A parameterless Huzi `fn main` is compiled with the C
+            // `main(argc, argv)` signature; capture the hidden params.
+            if stmt.params.is_empty() && function.count_params() == 2 {
+                self.store_main_args(function);
+            }
         }
 
         let return_type = match &stmt.return_type {

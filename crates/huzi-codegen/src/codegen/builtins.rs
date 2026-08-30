@@ -8,6 +8,7 @@ impl<'ctx> CodeGen<'ctx> {
     pub(super) fn prelude(&mut self) -> Result<()> {
         self.declare_libc_functions();
         self.declare_libm_functions();
+        self.declare_arg_support();
         Ok(())
     }
 
@@ -308,6 +309,18 @@ impl<'ctx> CodeGen<'ctx> {
             .unwrap_left()
             .into_int_value();
 
+        // Record EOF for is_eof(): getchar returns -1 at end of input.
+        let eof_hit = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                c,
+                i32_type.const_int(-1i64 as u64, true),
+                "eof_hit",
+            )
+            .unwrap();
+        self.mark_eof_flag(eof_hit);
+
         let idx = self
             .builder
             .build_load(i32_type, idx_ptr, "idx")
@@ -408,7 +421,8 @@ impl<'ctx> CodeGen<'ctx> {
         // Allocate space for int
         let int_ptr = self.build_alloca(self.context.i32_type().into(), "int_input")?;
 
-        self.builder
+        let scanf_ret = self
+            .builder
             .build_call(
                 scanf_fn,
                 &[
@@ -417,7 +431,22 @@ impl<'ctx> CodeGen<'ctx> {
                 ],
                 "scanf_int",
             )
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_left()
+            .into_int_value();
+
+        // Record EOF for is_eof(): scanf returns -1 when input ends.
+        let eof_hit = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                scanf_ret,
+                self.context.i32_type().const_int(-1i64 as u64, true),
+                "eof_hit",
+            )
             .unwrap();
+        self.mark_eof_flag(eof_hit);
 
         let value = self
             .builder
@@ -440,7 +469,8 @@ impl<'ctx> CodeGen<'ctx> {
         // Allocate space for double
         let float_ptr = self.build_alloca(self.context.f64_type().into(), "float_input")?;
 
-        self.builder
+        let scanf_ret = self
+            .builder
             .build_call(
                 scanf_fn,
                 &[
@@ -449,7 +479,22 @@ impl<'ctx> CodeGen<'ctx> {
                 ],
                 "scanf_float",
             )
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_left()
+            .into_int_value();
+
+        // Record EOF for is_eof(): scanf returns -1 when input ends.
+        let eof_hit = self
+            .builder
+            .build_int_compare(
+                inkwell::IntPredicate::EQ,
+                scanf_ret,
+                self.context.i32_type().const_int(-1i64 as u64, true),
+                "eof_hit",
+            )
             .unwrap();
+        self.mark_eof_flag(eof_hit);
 
         let value = self
             .builder
