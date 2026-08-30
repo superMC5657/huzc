@@ -82,6 +82,40 @@ impl<'ctx> CodeGen<'ctx> {
         );
         self.module.add_function("exit", exit_fn, None);
 
+        // rand/srand for pseudo-random numbers
+        let rand_fn = self.context.i32_type().fn_type(&[], false);
+        self.module.add_function("rand", rand_fn, None);
+        let srand_fn = self
+            .context
+            .void_type()
+            .fn_type(&[self.context.i32_type().into()], false);
+        self.module.add_function("srand", srand_fn, None);
+
+        // time for Unix timestamps (seconds); called with a null timer ptr
+        let time_fn = self.context.i64_type().fn_type(
+            &[self
+                .context
+                .ptr_type(AddressSpace::default())
+                .into()],
+            false,
+        );
+        self.module.add_function("time", time_fn, None);
+
+        // Millisecond sleep: Sleep(DWORD ms) on Windows, usleep(usec) on POSIX.
+        if cfg!(windows) {
+            let sleep_fn = self
+                .context
+                .void_type()
+                .fn_type(&[self.context.i32_type().into()], false);
+            self.module.add_function("Sleep", sleep_fn, None);
+        } else {
+            let usleep_fn = self
+                .context
+                .void_type()
+                .fn_type(&[self.context.i32_type().into()], false);
+            self.module.add_function("usleep", usleep_fn, None);
+        }
+
         // strcpy for string copy
         let strcpy_fn = self.context.i32_type().fn_type(
             &[

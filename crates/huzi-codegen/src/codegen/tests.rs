@@ -255,3 +255,33 @@ fn array_indexing_carries_bounds_check() {
         "array indexing should carry a bounds check block"
     );
 }
+
+/// 系统类内置函数(rand/srand/time)生成合法 IR 并正确声明符号。
+#[test]
+fn system_builtins_verify() {
+    let context = Context::create();
+    let mut codegen = CodeGen::new(&context, "test");
+    let call = |name: &str, args: Vec<Expr>| Expr::Call(CallExpr {
+        callee: Box::new(Expr::Ident(name.to_string())),
+        arguments: args,
+    });
+    let program = main_program(vec![
+        sp(Stmt::Expr(ExprStmt {
+            expr: call("srand", vec![Expr::Literal(Literal::Int(42))]),
+        })),
+        let_stmt("r", call("rand", vec![])),
+        let_stmt("t", call("time", vec![])),
+        sp(Stmt::Expr(ExprStmt {
+            expr: call("sleep_ms", vec![Expr::Literal(Literal::Int(1))]),
+        })),
+        sp(Stmt::Return(ReturnStmt {
+            value: Some(Expr::Literal(Literal::Int(0))),
+        })),
+    ]);
+    codegen.compile(&program).expect("compile should succeed");
+    assert!(codegen.verify());
+    let ir = codegen.print_llvm_ir();
+    for symbol in ["declare i32 @rand", "declare void @srand", "declare i64 @time"] {
+        assert!(ir.contains(symbol), "IR should declare {symbol}");
+    }
+}

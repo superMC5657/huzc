@@ -428,6 +428,11 @@ impl<'ctx> CodeGen<'ctx> {
             "arg_count" => return self.compile_arg_count(),
             "arg" => return self.compile_arg(&expr.arguments),
             "is_eof" => return self.compile_is_eof(),
+            "rand" => return self.compile_rand(),
+            "srand" => return self.compile_srand(&expr.arguments),
+            "time" => return self.compile_time(),
+            "exit" => return self.compile_exit(&expr.arguments),
+            "sleep_ms" => return self.compile_sleep_ms(&expr.arguments),
             _ => {}
         }
 
