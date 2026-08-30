@@ -170,11 +170,19 @@ pub struct IfStmt {
     pub else_branch: Option<Block>,
 }
 
+/// `for` 循环的迭代来源:整数范围或数组。
+#[derive(Debug, Clone)]
+pub enum ForSource {
+    /// `for i in start..end`
+    Range { start: Expr, end: Expr },
+    /// `for x in arr`(数组变量/结构体字段,长度编译期已知)
+    Array(Expr),
+}
+
 #[derive(Debug, Clone)]
 pub struct ForStmt {
     pub var_name: String,
-    pub start: Expr,
-    pub end: Expr,
+    pub source: ForSource,
     pub body: Block,
 }
 

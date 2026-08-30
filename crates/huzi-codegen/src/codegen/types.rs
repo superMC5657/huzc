@@ -224,6 +224,13 @@ impl<'ctx> CodeGen<'ctx> {
                 }
             }
         }
+        if let Expr::ArrayLiteral(elements) = array_expr {
+            if let Some(first) = elements.first() {
+                if let Some(ty) = self.infer_expr_type(first) {
+                    return Ok(ty);
+                }
+            }
+        }
         if let Expr::FieldAccess(fa) = array_expr {
             if let Some((_, fields)) = self.struct_def_of_expr(&fa.base) {
                 if let Some(info) = fields.iter().find(|info| info.name == fa.field) {
@@ -239,11 +246,38 @@ impl<'ctx> CodeGen<'ctx> {
         fallback.ok_or_else(|| HuziError::new_global("Cannot determine array element type"))
     }
 
+    /// 静态推断表达式的 LLVM 类型(不生成任何指令),用于数组字面量
+    /// 的元素类型推断;推断不出(如结构体字面量元素)返回 None。
+    pub(super) fn infer_expr_type(
+        &self,
+        expr: &Expr,
+    ) -> Option<inkwell::types::BasicTypeEnum<'ctx>> {
+        match expr {
+            Expr::Literal(lit) => Some(match lit {
+                Literal::Int(n) => {
+                    if *n >= i32::MIN as i64 && *n <= i32::MAX as i64 {
+                        self.context.i32_type().into()
+                    } else {
+                        self.context.i64_type().into()
+                    }
+                }
+                Literal::Float(_) => self.context.f64_type().into(),
+                Literal::Bool(_) => self.context.bool_type().into(),
+                Literal::String(_) => self
+                    .context
+                    .ptr_type(inkwell::AddressSpace::default())
+                    .into(),
+                Literal::Char(_) => self.context.i8_type().into(),
+            }),
+            Expr::Ident(name) => self.scope_lookup(name).map(|slot| slot.ty),
+            _ => None,
+        }
+    }
+
     pub(super) fn coerce_index(
         &self,
         index_val: inkwell::values::BasicValueEnum<'ctx>,
-    ) -> Result<inkwell::values::IntValue<'ctx>> {
-        if !index_val.is_int_value() {
+    ) -> Result<inkwell::values::IntValue<'ctx>> {        if !index_val.is_int_value() {
             return Err(HuziError::new_global("Array index must be an integer"));
         }
         let int_val = index_val.into_int_value();

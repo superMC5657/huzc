@@ -92,11 +92,16 @@ impl<'ctx> CodeGen<'ctx> {
     }
 
     /// 求数组表达式的编译期长度:let 数组变量取槽内记录,结构体字段
-    /// 取 AST 类型标注;其余情况返回 None。
+    /// 取 AST 类型标注,数组字面量取元素个数;其余情况返回 None。
     pub(super) fn resolve_array_len(
         &self,
         array_expr: &huzi_ast::Expr,
     ) -> Result<Option<u32>> {
+        if let huzi_ast::Expr::ArrayLiteral(elements) = array_expr {
+            if !elements.is_empty() {
+                return Ok(Some(elements.len() as u32));
+            }
+        }
         if let huzi_ast::Expr::Ident(name) = array_expr {
             if let Some(slot) = self.scope_lookup(name) {
                 return Ok(slot.array_len);

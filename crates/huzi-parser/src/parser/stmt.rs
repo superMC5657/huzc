@@ -218,18 +218,22 @@ impl Parser {
 
         self.expect(&Token::In, "Expected 'in' after loop variable")?;
 
-        let start = self.parse_expression()?;
+        let first = self.parse_expression()?;
 
-        self.expect(&Token::DotDot, "Expected '..'")?;
-
-        let end = self.parse_expression()?;
+        // `for i in start..end` 范围循环,或 `for x in arr` 数组遍历。
+        let source = if self.check(&Token::DotDot) {
+            self.advance();
+            let end = self.parse_expression()?;
+            ForSource::Range { start: first, end }
+        } else {
+            ForSource::Array(first)
+        };
 
         let body = self.parse_block()?;
 
         Ok(Stmt::For(ForStmt {
             var_name,
-            start,
-            end,
+            source,
             body,
         }))
     }

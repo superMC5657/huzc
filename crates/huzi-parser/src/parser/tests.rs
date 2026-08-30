@@ -85,3 +85,23 @@ fn statements_carry_source_span() {
     assert_eq!(program.statements[1].span.line, 2);
     assert_eq!(program.statements[1].span.column, 1);
 }
+
+/// `for x in arr` 应解析为 ForSource::Array。
+#[test]
+fn parses_for_in_array() {
+    let program = parse("fn main() -> i32 {\n    for x in nums {\n        print(x)\n    }\n    return 0\n}");
+    let Stmt::Fn(fn_stmt) = &program.statements[0].node else {
+        panic!("expected fn main");
+    };
+    let mut found_array = false;
+    for s in &fn_stmt.body.statements {
+        if let Stmt::For(for_stmt) = &s.node {
+            assert!(
+                matches!(&for_stmt.source, ForSource::Array(_)),
+                "for x in nums should parse as array iteration"
+            );
+            found_array = true;
+        }
+    }
+    assert!(found_array, "for statement should be present");
+}
