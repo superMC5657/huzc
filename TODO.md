@@ -166,6 +166,18 @@ huzc/
 
 ---
 
+## 2026-08-30 更新(三)
+
+完成 **argc/argv 与管道 stdin**(P1 第 3 项补充)与**四则计算器模块化示例**(两次提交):
+
+- **内置函数**:`arg_count()`/`arg(i)`(越界返回空串)/`is_eof()`;main 以 C 的 `i32 main(i32, ptr)` ABI 编译,实参存入模块级全局;read_* 读到 EOF 置位 `huzi_eof` 标志(codegen 新增 args.rs)。
+- **链接修复**:msvc 路径去掉 `/ENTRY:main`,改用默认 `mainCRTStartup`,CRT 启动后正确传入 argc/argv(原先 OS 直接调 main,参数为垃圾值)。
+- **索引修复**:字符串参数 `s: str` 解析为 `Named("str")`,compile_fn 参数槽补上 elem 元数据,`s[i]` 可用。
+- **示例**:examples/25_calculator.hz(主程序编排)+ mods/calc_input.hz(输入:读行/找运算符/文本→数值)+ mods/calc_core.hz(四则运算);支持小数、空格、管道与交互输入,q 或 EOF 退出,含非法表达式与除零提示。
+- **文档**:USAGE.md 补充命令行参数/管道输入章节;test.sh 为 24 号管道示例喂 stdin。
+
+---
+
 ## 2026-08-30 更新(二)
 
 完成**调试支持**(P4 第 13 项全部三个子项,两次提交):
