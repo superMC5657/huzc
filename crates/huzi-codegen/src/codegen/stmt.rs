@@ -200,7 +200,10 @@ impl<'ctx> CodeGen<'ctx> {
             // Arrays decay to pointers; remember the element type for indexing.
             let elem = match &param.param_type {
                 Type::Array(elem_ty, _) => Some(self.type_to_llvm(elem_ty)?),
+                // `s: str` parses as Named("str") (parse_type keeps builtin
+                // names as Named), so both forms need char-index metadata.
                 Type::Str => Some(self.context.i8_type().into()),
+                Type::Named(n) if n == "str" => Some(self.context.i8_type().into()),
                 _ => None,
             };
 
