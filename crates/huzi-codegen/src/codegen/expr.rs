@@ -73,8 +73,19 @@ impl<'ctx> CodeGen<'ctx> {
                 self.build_arithmetic(&expr.operator, &left, &right)?
             }
             BinOp::Eq | BinOp::Neq | BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                let (int_pred, float_pred) = Self::compare_predicates(&expr.operator);
-                self.build_int_or_float_compare(int_pred, float_pred, &left, &right)
+                if left.is_pointer_value() && right.is_pointer_value() {
+                    // 字符串以 `i8*` 表示;两个指针操作数按 strcmp 比较,
+                    // 数组变量同样以指针装载,直接比较是无意义的,显式报错。
+                    if self.expr_is_array(&expr.left) && self.expr_is_array(&expr.right) {
+                        return Err(HuziError::new_global(
+                            "Arrays cannot be compared directly; compare elements instead",
+                        ));
+                    }
+                    self.build_string_compare(&expr.operator, &left, &right)?
+                } else {
+                    let (int_pred, float_pred) = Self::compare_predicates(&expr.operator);
+                    self.build_int_or_float_compare(int_pred, float_pred, &left, &right)
+                }
             }
             BinOp::And | BinOp::Or => unreachable!("short-circuit handled above"),
         };
@@ -250,6 +261,55 @@ impl<'ctx> CodeGen<'ctx> {
                 )
                 .unwrap()
                 .into()
+        }
+    }
+
+    /// 字符串比较:调用 C `strcmp` 后与 0 比较。支持全部六个比较运算符
+    /// (`<` 等按字典序),结果为 `i1`。
+    fn build_string_compare(
+        &mut self,
+        op: &BinOp,
+        left: &inkwell::values::BasicValueEnum<'ctx>,
+        right: &inkwell::values::BasicValueEnum<'ctx>,
+    ) -> Result<inkwell::values::BasicValueEnum<'ctx>> {
+        let strcmp_fn = self
+            .module
+            .get_function("strcmp")
+            .expect("strcmp declared in prelude");
+        let cmp = self
+            .builder
+            .build_call(
+                strcmp_fn,
+                &[left.into_pointer_value().into(), right.into_pointer_value().into()],
+                "str_cmp",
+            )
+            .unwrap()
+            .try_as_basic_value()
+            .unwrap_left()
+            .into_int_value();
+        let zero = self.context.i32_type().const_int(0, false);
+        let (int_pred, _) = Self::compare_predicates(op);
+        Ok(self
+            .builder
+            .build_int_compare(int_pred, cmp, zero, "str_bool")
+            .unwrap()
+            .into())
+    }
+
+    /// 操作数是否为确定大小的数组(变量或结构体字段)。用于在字符串
+    /// 比较路径上拦下"数组与数组比较"。
+    fn expr_is_array(&self, expr: &Expr) -> bool {
+        match expr {
+            Expr::Ident(name) => self
+                .scope_lookup(name)
+                .map(|slot| slot.array_len.is_some())
+                .unwrap_or(false),
+            Expr::FieldAccess(fa) => self
+                .struct_def_of_expr(&fa.base)
+                .and_then(|(_, fields)| fields.iter().find(|f| f.name == fa.field))
+                .map(|f| matches!(f.ast_ty, Type::Array(..)))
+                .unwrap_or(false),
+            _ => false,
         }
     }
 

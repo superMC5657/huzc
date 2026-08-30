@@ -65,6 +65,16 @@ impl<'ctx> CodeGen<'ctx> {
         );
         self.module.add_function("strlen", strlen_fn, None);
 
+        // strcmp for string comparison (==/!=/< etc. on str operands)
+        let strcmp_fn = self.context.i32_type().fn_type(
+            &[
+                self.context.ptr_type(AddressSpace::default()).into(),
+                self.context.ptr_type(AddressSpace::default()).into(),
+            ],
+            false,
+        );
+        self.module.add_function("strcmp", strcmp_fn, None);
+
         // strcpy for string copy
         let strcpy_fn = self.context.i32_type().fn_type(
             &[
