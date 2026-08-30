@@ -59,6 +59,7 @@ mod args;
 mod builtins;
 mod debuginfo;
 mod expr;
+mod runtime;
 mod stmt;
 #[cfg(test)]
 mod tests;

@@ -199,3 +199,59 @@ fn no_debug_info_keeps_ir_clean() {
         "plain build must not emit debug metadata"
     );
 }
+
+/// `a / b` 应生成除零运行时检查块(rt_fail),除法本身为有符号除法。
+#[test]
+fn int_division_carries_zero_check() {
+    let context = Context::create();
+    let mut codegen = CodeGen::new(&context, "test");
+    let program = main_program(vec![
+        let_stmt("a", Expr::Literal(Literal::Int(10))),
+        let_stmt("b", Expr::Literal(Literal::Int(3))),
+        sp(Stmt::Return(ReturnStmt {
+            value: Some(Expr::Binary(BinaryExpr {
+                left: Box::new(Expr::Ident("a".to_string())),
+                operator: BinOp::Div,
+                right: Box::new(Expr::Ident("b".to_string())),
+            })),
+        })),
+    ]);
+    codegen.compile(&program).expect("compile should succeed");
+    assert!(codegen.verify());
+    let ir = codegen.print_llvm_ir();
+    assert!(ir.contains("sdiv"), "integer division should emit sdiv");
+    assert!(
+        ir.contains("rt_fail"),
+        "division should carry a zero check block"
+    );
+}
+
+/// 数组下标读取应生成越界检查块(rt_fail)。
+#[test]
+fn array_indexing_carries_bounds_check() {
+    let context = Context::create();
+    let mut codegen = CodeGen::new(&context, "test");
+    let program = main_program(vec![
+        let_stmt(
+            "arr",
+            Expr::ArrayLiteral(vec![
+                Expr::Literal(Literal::Int(1)),
+                Expr::Literal(Literal::Int(2)),
+                Expr::Literal(Literal::Int(3)),
+            ]),
+        ),
+        sp(Stmt::Return(ReturnStmt {
+            value: Some(Expr::ArrayIndex(ArrayIndexExpr {
+                array: Box::new(Expr::Ident("arr".to_string())),
+                index: Box::new(Expr::Literal(Literal::Int(1))),
+            })),
+        })),
+    ]);
+    codegen.compile(&program).expect("compile should succeed");
+    assert!(codegen.verify());
+    let ir = codegen.print_llvm_ir();
+    assert!(
+        ir.contains("rt_fail"),
+        "array indexing should carry a bounds check block"
+    );
+}

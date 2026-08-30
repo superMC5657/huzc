@@ -173,16 +173,20 @@ impl<'ctx> CodeGen<'ctx> {
                 .build_int_mul(l, r, "mul")
                 .unwrap()
                 .into(),
-            BinOp::Div => self
-                .builder
-                .build_int_signed_div(l, r, "div")
-                .unwrap()
-                .into(),
-            BinOp::Mod => self
-                .builder
-                .build_int_signed_rem(l, r, "mod")
-                .unwrap()
-                .into(),
+            BinOp::Div => {
+                self.emit_div_zero_check(r, false)?;
+                self.builder
+                    .build_int_signed_div(l, r, "div")
+                    .unwrap()
+                    .into()
+            }
+            BinOp::Mod => {
+                self.emit_div_zero_check(r, true)?;
+                self.builder
+                    .build_int_signed_rem(l, r, "mod")
+                    .unwrap()
+                    .into()
+            }
             _ => unreachable!("non-arithmetic operator reached build_int_arithmetic"),
         };
         Ok(value)
@@ -494,6 +498,8 @@ impl<'ctx> CodeGen<'ctx> {
                 let index_val = self.compile_expr(&idx_expr.index)?;
                 let index_i32 = self.coerce_index(index_val)?;
 
+                self.emit_bounds_check(&idx_expr.array, index_i32)?;
+
                 let value = self.coerce_value(elem_type, value)?;
 
                 let elem_ptr = unsafe {
@@ -542,6 +548,8 @@ impl<'ctx> CodeGen<'ctx> {
                 let elem_type = self.resolve_elem_type(&idx_expr.array, None)?;
                 let index_val = self.compile_expr(&idx_expr.index)?;
                 let index_i32 = self.coerce_index(index_val)?;
+
+                self.emit_bounds_check(&idx_expr.array, index_i32)?;
 
                 let elem_ptr = unsafe {
                     self.builder

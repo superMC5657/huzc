@@ -75,6 +75,13 @@ impl<'ctx> CodeGen<'ctx> {
         );
         self.module.add_function("strcmp", strcmp_fn, None);
 
+        // exit for runtime error aborts (division by zero, out-of-bounds, ...)
+        let exit_fn = self.context.void_type().fn_type(
+            &[self.context.i32_type().into()],
+            false,
+        );
+        self.module.add_function("exit", exit_fn, None);
+
         // strcpy for string copy
         let strcpy_fn = self.context.i32_type().fn_type(
             &[
